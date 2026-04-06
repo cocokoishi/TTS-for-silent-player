@@ -119,6 +119,16 @@ impl MugenTtsApp {
             || c == ';' || c == ':' || c == '、' || c == '。' || c == '！'
             || c == '？' || c == '，' || c == '；' || c == '：' || c == '…'
     }
+
+    fn is_cjk_char(c: char) -> bool {
+        matches!(c,
+            '\u{4E00}'..='\u{9FFF}'     // CJK Unified Ideographs
+            | '\u{3400}'..='\u{4DBF}'   // CJK Extension A
+            | '\u{F900}'..='\u{FAFF}'   // CJK Compatibility Ideographs
+            | '\u{2E80}'..='\u{2EFF}'   // CJK Radicals Supplement
+            | '\u{20000}'..='\u{2A6DF}' // CJK Extension B
+        )
+    }
 }
 
 impl eframe::App for MugenTtsApp {
@@ -364,11 +374,24 @@ impl eframe::App for MugenTtsApp {
                 // Read everything on Enter or Paste
                 trigger_idx = Some(self.text.len());
             } else if self.text != old_text {
-                // If just normal typing, scan unread portion for trigger chars
+                // Scan unread portion for trigger chars (punctuation, or space after CJK)
                 let unread_text = &self.text[rge..];
-                if let Some(r_idx) = unread_text.rfind(Self::is_trigger_char) {
-                    let ch_len = unread_text[r_idx..].chars().next().unwrap().len_utf8();
-                    trigger_idx = Some(rge + r_idx + ch_len);
+                let mut prev_char: Option<char> = if rge > 0 {
+                    self.text[..rge].chars().last()
+                } else {
+                    None
+                };
+                let mut last_trigger_end: Option<usize> = None;
+                for (byte_idx, ch) in unread_text.char_indices() {
+                    if Self::is_trigger_char(ch)
+                        || (ch == ' ' && prev_char.map_or(false, Self::is_cjk_char))
+                    {
+                        last_trigger_end = Some(byte_idx + ch.len_utf8());
+                    }
+                    prev_char = Some(ch);
+                }
+                if let Some(offset) = last_trigger_end {
+                    trigger_idx = Some(rge + offset);
                 }
             }
 

@@ -206,7 +206,12 @@ impl TtsBridge {
         while let Ok(cmd) = cmd_rx.recv() {
             let json = match cmd {
                 TtsCommand::Speak(text) => {
-                    let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+                    let escaped = text
+                        .replace('\\', "\\\\")
+                        .replace('"', "\\\"")
+                        .replace('\n', "\\n")
+                        .replace('\r', "\\r")
+                        .replace('\t', "\\t");
                     format!("{{\"a\":\"speak\",\"t\":\"{escaped}\"}}")
                 }
                 TtsCommand::Stop => r#"{"a":"stop"}"#.to_string(),
