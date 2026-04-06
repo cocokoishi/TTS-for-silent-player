@@ -7,7 +7,6 @@ A lightweight Text-to-Speech (TTS) application designed specifically for "Mute" 
 ## 🚀 Features
 * **Ultra-Lightweight:** Only calls native system voice functions to keep CPU/RAM usage at a minimum.
 * **Simple Operation:** No complex configuration required—just run and speak.
-* **Focus Shortcut:** Optimized for VR/Desktop switching with a dedicated refocusing key.
 
 ## 📋 Prerequisites
 * **OS:** Windows PC.
@@ -15,10 +14,10 @@ A lightweight Text-to-Speech (TTS) application designed specifically for "Mute" 
 
 ## 🛠 How to Use
 1.  **Installation:** Download and unzip the application.
-2.  **Audio Setup:** * Set the application's output device to **CABLE Input**.
-    * In VRChat, set your microphone input to **CABLE Output**.
-3.  **Run:** Open the `.exe` file.
-4.  **Refocusing:** While in-game, press **Right Shift** to quickly bring the focus back to the application for typing.
+2.  **Run:** Open the `.exe` file
+3.  **Audio Setup:**  Set the application's output device to **CABLE Input**.
+    In VRChat, set your microphone input to **CABLE Output**.
+4.  **Refocusing:** While in-game, press **Right Shift** to quickly bring the focus back to the application for typing. You can set always on top in the settings.
 
 ## ⌨️ Controls
 | Key | Function |
