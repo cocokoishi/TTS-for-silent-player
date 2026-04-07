@@ -314,50 +314,71 @@ impl eframe::App for MugenTtsApp {
                             .color(egui::Color32::from_rgb(150, 150, 160)),
                     );
 
-                let response = ui.add(text_edit);
-                if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    // 1. 从前往后比对，找出相同的前缀长度
-                    let mut prefix_len = 0;
-                    for (c_old, c_new) in old_text.chars().zip(self.text.chars()) {
-                        if c_old == c_new {
-                            prefix_len += c_old.len_utf8();
-                        } else {
-                            break;
-                        }
-                    }
+                // --- 1. 记录输入法 (IME) 活跃状态，防抖 1 帧 ---
+                let mut is_ime_active_recently = false;
+                ui.ctx().data_mut(|d| {
+                    let last_ime_frame = d.get_temp::<u64>(egui::Id::new("last_ime_frame")).unwrap_or(0);
+                    let current_frame = ui.ctx().frame_nr();
                     
-                    // 2. 从后往前比对，找出相同的后缀长度
-                    let old_rem = &old_text[prefix_len..];
-                    let new_rem = &self.text[prefix_len..];
-                    let mut suffix_len = 0;
-                    for (c_old, c_new) in old_rem.chars().rev().zip(new_rem.chars().rev()) {
-                        if c_old == c_new {
-                            suffix_len += c_old.len_utf8();
-                        } else {
-                            break;
+                    let mut current_has_ime = false;
+                    ui.ctx().input(|i| {
+                        // 只要当前帧有任何输入法事件（如组合、提交），就标记为 IME 活跃
+                        if i.events.iter().any(|e| matches!(e, egui::Event::Ime(_))) {
+                            current_has_ime = true;
                         }
+                    });
+
+                    if current_has_ime {
+                        d.insert_temp(egui::Id::new("last_ime_frame"), current_frame);
+                        is_ime_active_recently = true;
+                    } else if current_frame.saturating_sub(last_ime_frame) <= 1 {
+                        // 允许 1 帧的延迟容忍度（处理 Windows 下极其常见的 Ime 事件与 Enter 键事件不同步的 Bug）
+                        is_ime_active_recently = true;
                     }
+                });
 
-                    // 3. 提取出真正在光标处被改变（插入）的部分
-                    if prefix_len + suffix_len <= self.text.len() {
-                        let inserted = &self.text[prefix_len .. self.text.len() - suffix_len];
+                // --- 2. 渲染输入框 ---
+                let response = ui.add(text_edit);
+                
+                // --- 3. 依赖底层事件和光标的精确判定 ---
+                if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    if is_ime_active_recently {
+                        // 这是一个输入法用来提交英文（或拼音）的“确认回车”！
+                        // 底层框架这时肯定傻傻地把回车当成文本插入了 \n。
+                        // 我们直接通过 TextEdit 的光标，指哪打哪，精准拔除！
+                        if let Some(cursor) = response.cursor_range() {
+                            let c_idx = cursor.primary.ccursor.index;
+                            
+                            // 将字符索引转换为字符串字节索引
+                            let byte_idx = self.text.char_indices()
+                                .nth(c_idx)
+                                .map(|(i, _)| i)
+                                .unwrap_or(self.text.len());
+                                
+                            // 检查光标前是否真的是因为这次按键多出的换行符，是的话直接抹杀
+                            if byte_idx > 0 && self.text.as_bytes().get(byte_idx - 1) == Some(&b'\n') {
+                                self.text.remove(byte_idx - 1);
+                                let mut removed_chars = 1; // 记录删除了几个字符（用于修正光标）
+                                
+                                // 顺手处理 Windows 环境下可能附带的 \r
+                                if byte_idx > 1 && self.text.as_bytes().get(byte_idx - 2) == Some(&b'\r') {
+                                    self.text.remove(byte_idx - 2);
+                                    removed_chars += 1;
+                                }
 
-                        if inserted == "\n" || inserted == "\r\n" {
-                            // 纯物理回车换行（也包含了选中一段文本后按回车替换的情况）
-                            enter_pressed = true;
-                        } else if inserted.ends_with('\n') {
-                            // IME 造成的“字母+\n”毒瘤组合！
-                            // 我们通过总长度减去后缀长度，精准算出这个 \n 所在的字节绝对索引
-                            let newline_idx = self.text.len() - suffix_len - 1;
-                            
-                            // 外科手术式精确切除，绝不会动到文档末尾的任何字符
-                            self.text.remove(newline_idx);
-                            
-                            // 顺手处理可能附带的 \r (Windows 环境)
-                            if newline_idx > 0 && self.text.as_bytes().get(newline_idx - 1) == Some(&b'\r') {
-                                self.text.remove(newline_idx - 1);
+                                // 【上帝级细节】：同步修正 TextEdit 的底层光标记忆，防止光标视觉错位
+                                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
+                                    if let Some(ccursor) = state.cursor.char_range() {
+                                        let new_idx = ccursor.primary.index.saturating_sub(removed_chars);
+                                        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(new_idx))));
+                                        state.store(ui.ctx(), response.id);
+                                    }
+                                }
                             }
                         }
+                    } else {
+                        // 这才是真正的、干净的纯物理回车！
+                        enter_pressed = true;
                     }
                 }
             });
