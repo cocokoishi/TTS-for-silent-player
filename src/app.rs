@@ -314,72 +314,9 @@ impl eframe::App for MugenTtsApp {
                             .color(egui::Color32::from_rgb(150, 150, 160)),
                     );
 
-                // --- 1. 记录输入法 (IME) 活跃状态，防抖 1 帧 ---
-                let mut is_ime_active_recently = false;
-                ui.ctx().data_mut(|d| {
-                    let last_ime_frame = d.get_temp::<u64>(egui::Id::new("last_ime_frame")).unwrap_or(0);
-                    let current_frame = ui.ctx().frame_nr();
-                    
-                    let mut current_has_ime = false;
-                    ui.ctx().input(|i| {
-                        // 只要当前帧有任何输入法事件（如组合、提交），就标记为 IME 活跃
-                        if i.events.iter().any(|e| matches!(e, egui::Event::Ime(_))) {
-                            current_has_ime = true;
-                        }
-                    });
-
-                    if current_has_ime {
-                        d.insert_temp(egui::Id::new("last_ime_frame"), current_frame);
-                        is_ime_active_recently = true;
-                    } else if current_frame.saturating_sub(last_ime_frame) <= 1 {
-                        // 允许 1 帧的延迟容忍度（处理 Windows 下极其常见的 Ime 事件与 Enter 键事件不同步的 Bug）
-                        is_ime_active_recently = true;
-                    }
-                });
-
-                // --- 2. 渲染输入框 ---
                 let response = ui.add(text_edit);
-                
-                // --- 3. 依赖底层事件和光标的精确判定 ---
                 if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    if is_ime_active_recently {
-                        // 这是一个输入法用来提交英文（或拼音）的“确认回车”！
-                        // 底层框架这时肯定傻傻地把回车当成文本插入了 \n。
-                        // 我们直接通过 TextEdit 的光标，指哪打哪，精准拔除！
-                        if let Some(cursor) = response.cursor_range() {
-                            let c_idx = cursor.primary.ccursor.index;
-                            
-                            // 将字符索引转换为字符串字节索引
-                            let byte_idx = self.text.char_indices()
-                                .nth(c_idx)
-                                .map(|(i, _)| i)
-                                .unwrap_or(self.text.len());
-                                
-                            // 检查光标前是否真的是因为这次按键多出的换行符，是的话直接抹杀
-                            if byte_idx > 0 && self.text.as_bytes().get(byte_idx - 1) == Some(&b'\n') {
-                                self.text.remove(byte_idx - 1);
-                                let mut removed_chars = 1; // 记录删除了几个字符（用于修正光标）
-                                
-                                // 顺手处理 Windows 环境下可能附带的 \r
-                                if byte_idx > 1 && self.text.as_bytes().get(byte_idx - 2) == Some(&b'\r') {
-                                    self.text.remove(byte_idx - 2);
-                                    removed_chars += 1;
-                                }
-
-                                // 【上帝级细节】：同步修正 TextEdit 的底层光标记忆，防止光标视觉错位
-                                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), response.id) {
-                                    if let Some(ccursor) = state.cursor.char_range() {
-                                        let new_idx = ccursor.primary.index.saturating_sub(removed_chars);
-                                        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(new_idx))));
-                                        state.store(ui.ctx(), response.id);
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        // 这才是真正的、干净的纯物理回车！
-                        enter_pressed = true;
-                    }
+                    enter_pressed = true;
                 }
             });
 
