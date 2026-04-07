@@ -205,10 +205,8 @@ impl eframe::App for MugenTtsApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
 
-        // Adaptive repaint rate: faster while speaking (for status polling),
-        // slower when idle to save CPU/GPU.
-        let repaint_ms = if self.is_speaking { 100 } else { 500 };
-        ctx.request_repaint_after(std::time::Duration::from_millis(repaint_ms));
+        // Request continuous repaints for status polling
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
 
         let bg = egui::Color32::from_rgb(240, 240, 245); // Light background for the entire window
         let panel_bg = egui::Color32::from_rgb(230, 230, 235);
