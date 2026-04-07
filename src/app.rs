@@ -373,7 +373,7 @@ impl eframe::App for MugenTtsApp {
             if enter_pressed || pasted {
                 // Read everything on Enter or Paste
                 trigger_idx = Some(self.text.len());
-            } else if self.text != old_text {
+            } else if self.text != old_text && !self.settings.speak_on_enter_only {
                 // Scan unread portion for trigger chars (punctuation, or space after CJK)
                 let unread_text = &self.text[rge..];
                 let mut prev_char: Option<char> = if rge > 0 {
@@ -521,6 +521,19 @@ impl MugenTtsApp {
                             egui::WindowLevel::Normal
                         }
                     ));
+                }
+            });
+
+            ui.add_space(2.0);
+
+            // Speak on enter only toggle
+            ui.horizontal(|ui| {
+                let cb = ui.checkbox(
+                    &mut self.settings.speak_on_enter_only,
+                    egui::RichText::new("Speak on Enter only").color(egui::Color32::from_rgb(80, 80, 90)).size(12.0)
+                );
+                if cb.changed() {
+                    self.settings.save();
                 }
             });
 

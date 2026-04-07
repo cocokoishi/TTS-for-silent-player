@@ -2,12 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub voice_name: String,
     pub output_device: String,
     pub rate: i32,
     pub volume: i32,
     pub always_on_top: bool,
+    pub speak_on_enter_only: bool,
 }
 
 impl Default for Settings {
@@ -18,6 +20,7 @@ impl Default for Settings {
             rate: 0,
             volume: 100,
             always_on_top: false,
+            speak_on_enter_only: true,
         }
     }
 }
