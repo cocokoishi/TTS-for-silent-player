@@ -22,6 +22,7 @@ pub struct MugenTtsApp {
     speak_start_time: Instant,
     initialized: bool,
     pending_list: u8, // bit 0 = voices, bit 1 = devices
+    scroll_to_bottom: bool,
 }
 
 impl MugenTtsApp {
@@ -46,6 +47,7 @@ impl MugenTtsApp {
             speak_start_time: Instant::now(),
             initialized: false,
             pending_list: 0,
+            scroll_to_bottom: false,
         }
     }
 
@@ -229,7 +231,7 @@ impl eframe::App for MugenTtsApp {
                 ui.add_space(4.0);
             }
 
-            // Text area with highlighting
+            // Text area with highlighting inside a scroll area
             let available = ui.available_size();
 
             let read_end = self.read_end;
@@ -286,23 +288,37 @@ impl eframe::App for MugenTtsApp {
                 ui.fonts(|f| f.layout_job(job))
             };
 
-            let text_edit = egui::TextEdit::multiline(&mut self.text)
-                .desired_width(available.x)
-                .desired_rows(6)
-                .frame(false)
-                .margin(egui::vec2(10.0, 10.0))
-                .font(egui::FontId::new(18.0, egui::FontFamily::Proportional))
-                .text_color(egui::Color32::BLACK)
-                .layouter(&mut layouter)
-                .hint_text(
-                    egui::RichText::new("Enter text")
-                        .color(egui::Color32::from_rgb(150, 150, 160)),
-                );
+            let scroll_to_bottom = self.scroll_to_bottom;
+            self.scroll_to_bottom = false;
 
-            let response = ui.add_sized(available, text_edit);
-            if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                enter_pressed = true;
+            let mut scroll_area = egui::ScrollArea::vertical()
+                .max_height(available.y)
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
+
+            if scroll_to_bottom {
+                scroll_area = scroll_area.stick_to_bottom(true);
             }
+
+            scroll_area.show(ui, |ui| {
+                let text_edit = egui::TextEdit::multiline(&mut self.text)
+                    .desired_width(available.x - 14.0) // leave room for scrollbar
+                    .desired_rows(6)
+                    .frame(false)
+                    .margin(egui::vec2(10.0, 10.0))
+                    .font(egui::FontId::new(18.0, egui::FontFamily::Proportional))
+                    .text_color(egui::Color32::BLACK)
+                    .layouter(&mut layouter)
+                    .hint_text(
+                        egui::RichText::new("Enter text")
+                            .color(egui::Color32::from_rgb(150, 150, 160)),
+                    );
+
+                let response = ui.add(text_edit);
+                if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    enter_pressed = true;
+                }
+            });
 
         });
 
@@ -361,6 +377,7 @@ impl eframe::App for MugenTtsApp {
 
         // Handle text detection AFTER the UI has been drawn (no borrow conflict)
         if self.text != old_text || enter_pressed || pasted {
+            self.scroll_to_bottom = true;
             if self.text != old_text {
                 let cpl = Self::get_common_prefix_len(&old_text, &self.text);
                 self.read_end = self.read_end.min(cpl);
