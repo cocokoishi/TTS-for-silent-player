@@ -316,7 +316,13 @@ impl eframe::App for MugenTtsApp {
 
                 let response = ui.add(text_edit);
                 if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    enter_pressed = true;
+                    // Fix
+                    let old_newlines = old_text.chars().filter(|&c| c == '\n').count();
+                    let new_newlines = self.text.chars().filter(|&c| c == '\n').count();
+                    
+                    if new_newlines > old_newlines {
+                        enter_pressed = true;
+                    }
                 }
             });
 
