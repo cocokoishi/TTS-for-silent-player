@@ -1,5 +1,7 @@
-use crate::remote_tts::{RemoteSettings, RemoteTts, RemoteTtsCommand, RemoteTtsEvent};
-use crate::settings::Settings;
+use crate::online_tts::{
+    RemoteBackend, RemoteSettings, RemoteTts, RemoteTtsCommand, RemoteTtsEvent,
+};
+use crate::settings::{Settings, TtsMode};
 use crate::tts_bridge::{TtsBridge, TtsCommand, TtsEvent};
 use crate::vrchat_osc::{
     clamp_history_count, send_chatbox_input, truncate_for_chatbox, VRCHAT_CHATBOX_MAX_LINES,
@@ -13,6 +15,8 @@ use std::sync::Arc;
 use std::time::Instant;
 #[cfg(windows)]
 use windows::Win32::Foundation::{COLORREF, HWND};
+#[cfg(windows)]
+use windows::Win32::Globalization::GetUserDefaultUILanguage;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, GWL_EXSTYLE, LWA_ALPHA,
@@ -59,8 +63,10 @@ pub struct MugenTtsApp {
     show_settings: bool,
     show_remote_settings: bool,
     voices: Vec<String>,
+    edge_voices: Vec<String>,
     devices: Vec<String>,
     selected_voice_idx: usize,
+    selected_edge_voice_idx: usize,
     selected_device_idx: usize,
     focus_flag: Arc<AtomicBool>,
     last_status_poll: Instant,
@@ -70,13 +76,19 @@ pub struct MugenTtsApp {
     scroll_to_bottom: bool,
     ime_composing: bool,
     show_remote_error_notice: bool,
+    last_online_error_message: String,
+    edge_voices_requested: bool,
+    first_launch_missing_settings: bool,
+    vbcable_notice_checked: bool,
+    show_vbcable_notice: bool,
+    chinese_ui_locale: bool,
     last_applied_window_opacity: Option<u8>,
     pending_window_opacity_reapply_frames: u8,
     vrchat_recent_red_chunks: VecDeque<String>,
 }
 
 impl MugenTtsApp {
-    pub fn new(focus_flag: Arc<AtomicBool>) -> Self {
+    pub fn new(focus_flag: Arc<AtomicBool>, first_launch_missing_settings: bool) -> Self {
         let settings = Settings::load();
         let tts = TtsBridge::spawn();
         let remote_tts = RemoteTts::spawn();
@@ -93,8 +105,10 @@ impl MugenTtsApp {
             show_settings: false,
             show_remote_settings: false,
             voices: Vec::new(),
+            edge_voices: Vec::new(),
             devices: Vec::new(),
             selected_voice_idx: 0,
+            selected_edge_voice_idx: 0,
             selected_device_idx: 0,
             focus_flag,
             last_status_poll: Instant::now(),
@@ -104,6 +118,12 @@ impl MugenTtsApp {
             scroll_to_bottom: false,
             ime_composing: false,
             show_remote_error_notice: false,
+            last_online_error_message: String::new(),
+            edge_voices_requested: false,
+            first_launch_missing_settings,
+            vbcable_notice_checked: false,
+            show_vbcable_notice: false,
+            chinese_ui_locale: Self::is_chinese_ui_locale(),
             last_applied_window_opacity: None,
             pending_window_opacity_reapply_frames: 45,
             vrchat_recent_red_chunks: VecDeque::new(),
@@ -121,6 +141,96 @@ impl MugenTtsApp {
         }
         self.tts.send(TtsCommand::SetRate(self.settings.rate));
         self.tts.send(TtsCommand::SetVolume(self.settings.volume));
+    }
+
+    fn using_windows_offline(&self) -> bool {
+        matches!(self.settings.tts_mode, TtsMode::WindowsOffline)
+    }
+
+    fn using_edge_tts(&self) -> bool {
+        matches!(self.settings.tts_mode, TtsMode::Edge)
+    }
+
+    fn using_online_tts(&self) -> bool {
+        matches!(
+            self.settings.tts_mode,
+            TtsMode::Edge | TtsMode::OpenaiCompatibleRemote
+        )
+    }
+
+    fn request_edge_voices_if_needed(&mut self) {
+        if !self.edge_voices_requested {
+            self.remote_tts.send(RemoteTtsCommand::ListEdgeVoices);
+            self.edge_voices_requested = true;
+        }
+    }
+
+    fn stop_all_tts(&mut self) {
+        self.tts.send(TtsCommand::Stop);
+        self.remote_tts.send(RemoteTtsCommand::Stop);
+        self.pending_trigger_end = None;
+        self.reading_end = self.read_end;
+        self.is_speaking = false;
+    }
+
+    fn clear_text_and_stop(&mut self) {
+        self.text.clear();
+        self.read_end = 0;
+        self.reading_end = 0;
+        self.pending_trigger_end = None;
+        self.clear_vrchat_chatbox_history();
+        self.tts.send(TtsCommand::Stop);
+        self.remote_tts.send(RemoteTtsCommand::Stop);
+        self.is_speaking = false;
+    }
+
+    fn apply_mode_change(&mut self) {
+        self.stop_all_tts();
+        self.show_remote_error_notice = false;
+        self.last_online_error_message.clear();
+        if self.using_edge_tts() {
+            self.request_edge_voices_if_needed();
+        }
+        self.settings.save();
+    }
+
+    fn build_remote_settings(&self) -> RemoteSettings {
+        RemoteSettings {
+            backend: if self.using_edge_tts() {
+                RemoteBackend::Edge
+            } else {
+                RemoteBackend::OpenAiCompatible
+            },
+            output_device: self.settings.output_device.clone(),
+            api_url: self.settings.remote_api_url.clone(),
+            api_key: self.settings.remote_api_key.clone(),
+            model: self.settings.remote_model.clone(),
+            voice: self.settings.remote_voice.clone(),
+            speed: self.settings.remote_speed,
+            edge_voice: self.settings.edge_voice.clone(),
+            edge_rate: self.settings.edge_rate,
+            edge_volume: self.settings.edge_volume,
+            edge_pitch: self.settings.edge_pitch,
+        }
+    }
+
+    fn has_vbcable_device(devices: &[String]) -> bool {
+        devices.iter().any(|device| {
+            let lower = device.to_lowercase();
+            lower.contains("cable") || lower.contains("vb-audio")
+        })
+    }
+
+    #[cfg(windows)]
+    fn is_chinese_ui_locale() -> bool {
+        let lang_id = unsafe { GetUserDefaultUILanguage() };
+        let primary_lang_id = (lang_id as u16) & 0x03ff;
+        primary_lang_id == 0x04
+    }
+
+    #[cfg(not(windows))]
+    fn is_chinese_ui_locale() -> bool {
+        false
     }
 
     fn get_safe_boundaries(text: &str, read_end: usize, reading_end: usize) -> (usize, usize) {
@@ -174,23 +284,9 @@ impl MugenTtsApp {
         self.speak_start_time = Instant::now();
         self.push_vrchat_chatbox_update(&chunk);
 
-        if self.settings.use_remote_tts {
-            let remote_settings = RemoteSettings {
-                api_url: self.settings.remote_api_url.clone(),
-                api_key: self.settings.remote_api_key.clone(),
-                model: self.settings.remote_model.clone(),
-                voice: self.settings.remote_voice.clone(),
-                speed: self.settings.remote_speed,
-                output_device: self.settings.output_device.clone(),
-            };
+        if self.using_online_tts() {
             self.remote_tts
-                .send(RemoteTtsCommand::Speak(chunk, remote_settings));
-
-            // For remote TTS, we don't have a direct status poll like SAPI,
-            // so we'll just roughly estimate completion or rely on manual reset.
-            // But we can reset is_speaking after a short delay or if new text comes.
-            // For now, let's keep is_speaking true until next trigger or manual reset.
-            // A better way would be to have RemoteTts feedback, but that needs more async work.
+                .send(RemoteTtsCommand::Speak(chunk, self.build_remote_settings()));
         } else {
             self.tts.send(TtsCommand::Speak(chunk));
         }
@@ -351,6 +447,10 @@ impl MugenTtsApp {
 
 impl eframe::App for MugenTtsApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if self.using_edge_tts() && self.edge_voices.is_empty() {
+            self.request_edge_voices_if_needed();
+        }
+
         let should_retry_window_opacity = self.pending_window_opacity_reapply_frames > 0;
         if should_retry_window_opacity
             || self.last_applied_window_opacity != Some(self.settings.window_opacity)
@@ -415,6 +515,14 @@ impl eframe::App for MugenTtsApp {
                             self.settings.save();
                         }
                     }
+
+                    if self.first_launch_missing_settings && !self.vbcable_notice_checked {
+                        self.vbcable_notice_checked = true;
+                        if !Self::has_vbcable_device(&self.devices) {
+                            self.show_vbcable_notice = true;
+                        }
+                    }
+
                     self.selected_device_idx = self
                         .devices
                         .iter()
@@ -425,13 +533,12 @@ impl eframe::App for MugenTtsApp {
                 }
 
                 TtsEvent::SpeakingState(speaking) => {
-                    // Only care about speaking state if NOT using remote TTS
-                    if !self.settings.use_remote_tts && !speaking && self.is_speaking {
+                    if self.using_windows_offline() && !speaking && self.is_speaking {
                         self.finish_current_speech();
                     }
                 }
                 TtsEvent::Error(_e) => {
-                    if !self.settings.use_remote_tts {
+                    if self.using_windows_offline() {
                         self.fail_current_speech();
                     }
                 }
@@ -441,30 +548,59 @@ impl eframe::App for MugenTtsApp {
         for event in self.remote_tts.poll_events() {
             match event {
                 RemoteTtsEvent::PlaybackFinished => {
-                    if self.settings.use_remote_tts {
+                    if self.using_online_tts() {
                         self.finish_current_speech();
                     }
                 }
                 RemoteTtsEvent::SpeakFailed {
-                    message: _message,
+                    message,
                     consecutive_failures: _consecutive_failures,
                     sticky_error,
                 } => {
                     if sticky_error {
                         self.show_remote_error_notice = true;
+                        self.last_online_error_message = message;
                     }
-                    if self.settings.use_remote_tts {
+                    if self.using_online_tts() {
                         self.fail_current_speech();
                     }
                 }
                 RemoteTtsEvent::ConnectionRecovered => {
                     self.show_remote_error_notice = false;
+                    self.last_online_error_message.clear();
+                }
+                RemoteTtsEvent::EdgeVoices(voices) => {
+                    self.edge_voices_requested = true;
+                    self.edge_voices = voices;
+                    if self.settings.edge_voice.is_empty() {
+                        if let Some(chinese_voice) = self
+                            .edge_voices
+                            .iter()
+                            .find(|name| name.starts_with("zh-"))
+                            .cloned()
+                        {
+                            self.settings.edge_voice = chinese_voice;
+                        } else if let Some(first) = self.edge_voices.first() {
+                            self.settings.edge_voice = first.clone();
+                        }
+                        self.settings.save();
+                    }
+                    self.selected_edge_voice_idx = self
+                        .edge_voices
+                        .iter()
+                        .position(|name| name == &self.settings.edge_voice)
+                        .unwrap_or(0);
+                }
+                RemoteTtsEvent::EdgeVoicesFailed(message) => {
+                    self.edge_voices_requested = false;
+                    self.show_remote_error_notice = true;
+                    self.last_online_error_message = message;
                 }
             }
         }
 
         // Poll speaking status periodically (wait at least 400ms after starting to speak before polling to avoid queueing race condition)
-        if !self.settings.use_remote_tts
+        if self.using_windows_offline()
             && self.is_speaking
             && self.speak_start_time.elapsed().as_millis() > 400
             && self.last_status_poll.elapsed().as_millis() > 100
@@ -631,14 +767,7 @@ impl eframe::App for MugenTtsApp {
                         .on_hover_text("Stop speaking and clear text");
 
                     if reset_btn.clicked() {
-                        self.text.clear();
-                        self.read_end = 0;
-                        self.reading_end = 0;
-                        self.pending_trigger_end = None;
-                        self.clear_vrchat_chatbox_history();
-                        self.tts.send(TtsCommand::Stop);
-                        self.remote_tts.send(RemoteTtsCommand::Stop);
-                        self.is_speaking = false;
+                        self.clear_text_and_stop();
                     }
 
                     ui.add_space(4.0);
@@ -676,10 +805,17 @@ impl eframe::App for MugenTtsApp {
                         .inner_margin(egui::Margin::symmetric(12.0, 8.0))
                         .show(ui, |ui| {
                             ui.label(
-                                egui::RichText::new("remote server error")
+                                egui::RichText::new("online tts error")
                                     .color(egui::Color32::from_rgb(255, 245, 245))
                                     .size(13.0),
                             );
+                            if !self.last_online_error_message.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(self.last_online_error_message.clone())
+                                        .color(egui::Color32::from_rgb(255, 230, 230))
+                                        .size(11.0),
+                                );
+                            }
                         });
                 });
         }
@@ -747,6 +883,7 @@ impl eframe::App for MugenTtsApp {
 
         // Settings window (modal overlay)
         self.render_settings_window(ctx);
+        self.render_vbcable_notice_window(ctx);
     }
 }
 
@@ -779,40 +916,82 @@ impl MugenTtsApp {
 
             ui.add_space(2.0);
 
-            // Remote TTS toggle
             ui.horizontal(|ui| {
-                let cb = ui.checkbox(
-                    &mut self.settings.use_remote_tts,
-                    egui::RichText::new("Remote TTS (OpenAI)")
+                ui.label(
+                    egui::RichText::new("Mode")
                         .color(egui::Color32::from_rgb(80, 80, 90))
                         .size(12.0),
                 );
-                if cb.changed() {
-                    self.settings.save();
-                    self.pending_trigger_end = None;
-                    self.reading_end = self.read_end;
-                    self.is_speaking = false;
-                    if self.settings.use_remote_tts {
-                        self.tts.send(TtsCommand::Stop);
-                    } else {
-                        self.remote_tts.send(RemoteTtsCommand::Stop);
-                    }
+
+                let mut mode = self.settings.tts_mode;
+                egui::ComboBox::from_id_salt("tts_mode_combo")
+                    .selected_text(mode.label())
+                    .width(ui.available_width() - 96.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut mode,
+                            TtsMode::WindowsOffline,
+                            TtsMode::WindowsOffline.label(),
+                        );
+                        ui.selectable_value(&mut mode, TtsMode::Edge, TtsMode::Edge.label());
+                        ui.selectable_value(
+                            &mut mode,
+                            TtsMode::OpenaiCompatibleRemote,
+                            TtsMode::OpenaiCompatibleRemote.label(),
+                        );
+                    });
+
+                if mode != self.settings.tts_mode {
+                    self.settings.tts_mode = mode;
+                    self.apply_mode_change();
                 }
 
-                if self.settings.use_remote_tts {
-                    if ui
-                        .button(egui::RichText::new("⚙ Configure Remote").size(11.0))
+                if self.using_online_tts()
+                    && ui
+                        .button(egui::RichText::new("Configure").size(11.0))
                         .clicked()
-                    {
-                        self.show_remote_settings = true;
+                {
+                    if self.using_edge_tts() {
+                        self.request_edge_voices_if_needed();
                     }
+                    self.show_remote_settings = true;
                 }
             });
 
             ui.add_space(2.0);
 
-            // Windows SAPI basic settings (only if local)
-            ui.add_enabled_ui(!self.settings.use_remote_tts, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Output")
+                        .color(egui::Color32::from_rgb(80, 80, 90))
+                        .size(12.0),
+                );
+                let current = if self.selected_device_idx < self.devices.len() {
+                    self.devices[self.selected_device_idx].clone()
+                } else {
+                    "Loading...".to_string()
+                };
+                egui::ComboBox::from_id_salt("device_combo")
+                    .selected_text(&current)
+                    .width(ui.available_width() - 10.0)
+                    .show_ui(ui, |ui| {
+                        for (i, d) in self.devices.iter().enumerate() {
+                            if ui
+                                .selectable_label(i == self.selected_device_idx, d)
+                                .clicked()
+                            {
+                                self.selected_device_idx = i;
+                                self.settings.output_device = d.clone();
+                                self.tts.send(TtsCommand::SetDevice(d.clone()));
+                                self.settings.save();
+                            }
+                        }
+                    });
+            });
+
+            ui.add_space(2.0);
+
+            ui.add_enabled_ui(self.using_windows_offline(), |ui| {
                 // Voice selection
                 ui.horizontal(|ui| {
                     ui.label(
@@ -837,38 +1016,6 @@ impl MugenTtsApp {
                                     self.selected_voice_idx = i;
                                     self.settings.voice_name = v.clone();
                                     self.tts.send(TtsCommand::SetVoice(v.clone()));
-                                    self.settings.save();
-                                }
-                            }
-                        });
-                });
-
-                ui.add_space(2.0);
-
-                // Output device selection
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Output")
-                            .color(egui::Color32::from_rgb(80, 80, 90))
-                            .size(12.0),
-                    );
-                    let current = if self.selected_device_idx < self.devices.len() {
-                        self.devices[self.selected_device_idx].clone()
-                    } else {
-                        "Loading...".to_string()
-                    };
-                    egui::ComboBox::from_id_salt("device_combo")
-                        .selected_text(&current)
-                        .width(ui.available_width() - 10.0)
-                        .show_ui(ui, |ui| {
-                            for (i, d) in self.devices.iter().enumerate() {
-                                if ui
-                                    .selectable_label(i == self.selected_device_idx, d)
-                                    .clicked()
-                                {
-                                    self.selected_device_idx = i;
-                                    self.settings.output_device = d.clone();
-                                    self.tts.send(TtsCommand::SetDevice(d.clone()));
                                     self.settings.save();
                                 }
                             }
@@ -913,6 +1060,48 @@ impl MugenTtsApp {
                     }
                 });
             });
+
+            if self.using_edge_tts() {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Edge Voice")
+                            .color(egui::Color32::from_rgb(80, 80, 90))
+                            .size(12.0),
+                    );
+                    let voice_label = if self.settings.edge_voice.is_empty() {
+                        "Loading...".to_string()
+                    } else {
+                        self.settings.edge_voice.clone()
+                    };
+                    ui.label(
+                        egui::RichText::new(voice_label)
+                            .color(egui::Color32::from_rgb(60, 60, 70))
+                            .size(12.0),
+                    );
+                    if ui
+                        .button(egui::RichText::new("Refresh").size(11.0))
+                        .clicked()
+                    {
+                        self.edge_voices_requested = false;
+                        self.request_edge_voices_if_needed();
+                    }
+                });
+            } else if matches!(self.settings.tts_mode, TtsMode::OpenaiCompatibleRemote) {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Remote Voice")
+                            .color(egui::Color32::from_rgb(80, 80, 90))
+                            .size(12.0),
+                    );
+                    ui.label(
+                        egui::RichText::new(self.settings.remote_voice.clone())
+                            .color(egui::Color32::from_rgb(60, 60, 70))
+                            .size(12.0),
+                    );
+                });
+            }
 
             ui.add_space(2.0);
 
@@ -959,6 +1148,23 @@ impl MugenTtsApp {
                             },
                         ));
                 }
+
+                ui.add_space(8.0);
+
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Clear text")
+                                .color(egui::Color32::from_rgb(60, 60, 70))
+                                .size(12.0),
+                        )
+                        .fill(egui::Color32::from_rgb(200, 200, 210))
+                        .rounding(egui::Rounding::same(4.0)),
+                    )
+                    .clicked()
+                {
+                    self.clear_text_and_stop();
+                }
             });
 
             ui.add_space(2.0);
@@ -988,10 +1194,8 @@ impl MugenTtsApp {
                 if cb.changed() {
                     self.settings.save();
                 }
-            });
-
-            ui.add_enabled_ui(self.settings.vrchat_osc_enabled, |ui| {
-                ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.add_enabled_ui(self.settings.vrchat_osc_enabled, |ui| {
                     ui.label(
                         egui::RichText::new("OSC history")
                             .color(egui::Color32::from_rgb(80, 80, 90))
@@ -1017,44 +1221,96 @@ impl MugenTtsApp {
                     }
                 });
             });
-
-            ui.add_space(2.0);
-
-            // Clear text button
-            ui.horizontal(|ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("Clear text")
-                                .color(egui::Color32::from_rgb(60, 60, 70))
-                                .size(12.0),
-                        )
-                        .fill(egui::Color32::from_rgb(200, 200, 210))
-                        .rounding(egui::Rounding::same(4.0)),
-                    )
-                    .clicked()
-                {
-                    self.text.clear();
-                    self.read_end = 0;
-                    self.reading_end = 0;
-                    self.pending_trigger_end = None;
-                    self.clear_vrchat_chatbox_history();
-                    self.tts.send(TtsCommand::Stop);
-                    self.remote_tts.send(RemoteTtsCommand::Stop);
-                    self.is_speaking = false;
-                }
-            });
         });
     }
 
     fn render_settings_window(&mut self, ctx: &egui::Context) {
-        if self.show_remote_settings {
-            egui::Window::new("Remote TTS Settings")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .show(ctx, |ui| {
-                    ui.vertical(|ui| {
+        if !self.show_remote_settings || !self.using_online_tts() {
+            return;
+        }
+
+        let title = if self.using_edge_tts() {
+            "Edge TTS Settings"
+        } else {
+            "OpenAI-Compatible TTS Settings"
+        };
+
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    if self.using_edge_tts() {
+                        ui.horizontal(|ui| {
+                            ui.label("Voice:");
+                            if self.edge_voices.is_empty() {
+                                if ui
+                                    .text_edit_singleline(&mut self.settings.edge_voice)
+                                    .changed()
+                                {
+                                    self.settings.save();
+                                }
+                            } else {
+                                let current =
+                                    if self.selected_edge_voice_idx < self.edge_voices.len() {
+                                        self.edge_voices[self.selected_edge_voice_idx].clone()
+                                    } else {
+                                        self.settings.edge_voice.clone()
+                                    };
+                                egui::ComboBox::from_id_salt("edge_voice_combo")
+                                    .selected_text(current)
+                                    .width(260.0)
+                                    .show_ui(ui, |ui| {
+                                        for (i, voice) in self.edge_voices.iter().enumerate() {
+                                            if ui
+                                                .selectable_label(
+                                                    i == self.selected_edge_voice_idx,
+                                                    voice,
+                                                )
+                                                .clicked()
+                                            {
+                                                self.selected_edge_voice_idx = i;
+                                                self.settings.edge_voice = voice.clone();
+                                                self.settings.save();
+                                            }
+                                        }
+                                    });
+                            }
+
+                            if ui.button("Refresh").clicked() {
+                                self.edge_voices_requested = false;
+                                self.request_edge_voices_if_needed();
+                            }
+                        });
+
+                        ui.label(format!("Rate: {}%", self.settings.edge_rate));
+                        if ui
+                            .add(egui::Slider::new(&mut self.settings.edge_rate, -100..=100))
+                            .changed()
+                        {
+                            self.settings.save();
+                        }
+
+                        ui.label(format!("Volume: {}%", self.settings.edge_volume));
+                        if ui
+                            .add(egui::Slider::new(
+                                &mut self.settings.edge_volume,
+                                -100..=100,
+                            ))
+                            .changed()
+                        {
+                            self.settings.save();
+                        }
+
+                        ui.label(format!("Pitch: {}Hz", self.settings.edge_pitch));
+                        if ui
+                            .add(egui::Slider::new(&mut self.settings.edge_pitch, -100..=100))
+                            .changed()
+                        {
+                            self.settings.save();
+                        }
+                    } else {
                         ui.label("API Endpoint:");
                         if ui
                             .text_edit_singleline(&mut self.settings.remote_api_url)
@@ -1105,13 +1361,65 @@ impl MugenTtsApp {
                         {
                             self.settings.save();
                         }
+                    }
 
-                        ui.add_space(8.0);
-                        if ui.button("Close").clicked() {
-                            self.show_remote_settings = false;
-                        }
-                    });
+                    ui.add_space(8.0);
+                    if ui.button("Close").clicked() {
+                        self.show_remote_settings = false;
+                    }
                 });
+            });
+    }
+
+    fn render_vbcable_notice_window(&mut self, ctx: &egui::Context) {
+        if !self.show_vbcable_notice {
+            return;
         }
+
+        let (title, lead, step_1, step_2, step_3, note, close_text) = if self.chinese_ui_locale {
+            (
+                "未检测到 VB-CABLE",
+                "首次启动时没有检测到 VB-CABLE 音频设备。若要把语音路由到 VRChat，请先安装驱动：",
+                "1. 下载驱动压缩包：",
+                "2. 解压下载的 zip 文件。",
+                "3. 双击 VBCABLE_Setup_x64.exe 安装（建议以管理员身份运行）。",
+                "安装完成后，重启本程序，输出设备里会出现 CABLE 设备。",
+                "我知道了",
+            )
+        } else {
+            (
+                "VB-CABLE Not Detected",
+                "On first launch, no VB-CABLE audio device was found. To route TTS into VRChat, please install the driver:",
+                "1. Download the driver package:",
+                "2. Extract the downloaded zip archive.",
+                "3. Run VBCABLE_Setup_x64.exe (recommended: Run as Administrator).",
+                "After installation, restart this app so the CABLE device appears in the output list.",
+                "Close",
+            )
+        };
+
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_max_width(560.0);
+                ui.label(lead);
+                ui.add_space(6.0);
+                ui.label(step_1);
+                ui.hyperlink_to(
+                    "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip",
+                    "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip",
+                );
+                ui.add_space(6.0);
+                ui.label(step_2);
+                ui.label(step_3);
+                ui.add_space(8.0);
+                ui.label(note);
+                ui.add_space(10.0);
+                if ui.button(close_text).clicked() {
+                    self.show_vbcable_notice = false;
+                }
+            });
     }
 }

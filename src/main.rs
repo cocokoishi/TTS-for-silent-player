@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod remote_tts;
+mod online_tts;
 mod settings;
 mod tts_bridge;
 mod vrchat_osc;
@@ -25,6 +25,7 @@ fn main() -> eframe::Result<()> {
         hotkey_listener(focus_flag_clone);
     });
 
+    let first_launch_missing_settings = !Settings::config_exists();
     let settings = Settings::load();
     settings.save();
     let initial_window_opacity = settings.window_opacity;
@@ -93,7 +94,10 @@ fn main() -> eframe::Result<()> {
             visuals.panel_fill = bg_color;
             cc.egui_ctx.set_visuals(visuals);
 
-            Ok(Box::new(MugenTtsApp::new(focus_flag)))
+            Ok(Box::new(MugenTtsApp::new(
+                focus_flag,
+                first_launch_missing_settings,
+            )))
         }),
     )
 }

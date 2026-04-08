@@ -1,30 +1,33 @@
-# VRChat TTS For Mute
+﻿# VRChat TTS For Mute
 
-A lightweight Text-to-Speech (TTS) application designed specifically for "Mute" players in VRChat. This tool utilizes built-in Windows system speech synthesis to ensure minimal resource consumption and high performance.
+A lightweight Text-to-Speech (TTS) application for mute players in VRChat.
 
----
+## Features
+- Windows offline TTS mode (native SAPI voices).
+- Edge-TTS mode (built-in online synthesis, no Python dependency required).
+- OpenAI-compatible remote TTS mode (`/v1/audio/speech` style endpoint).
+- Output-device routing for VB-CABLE.
+- Fast refocus hotkey (`Right Shift`).
 
-## 🚀 Features
-* **Ultra-Lightweight:** Only calls native system voice functions to keep CPU/RAM usage at a minimum.
-* **Simple Operation:** No complex configuration required—just run and speak.
-* **OpenAI endpoint support:** Remote servers can be used to inference requests.
-## 📋 Prerequisites
-* **OS:** Windows PC.
-* **Driver:** You must have **VB-CABLE** (Virtual Audio Cable) installed to route the audio into VRChat. You can download it from https://vb-audio.com/Cable/index.htm .  
+## Prerequisites
+- OS: Windows.
+- Audio routing: [VB-CABLE](https://vb-audio.com/Cable/index.htm).
 
-## 🛠 How to Use
-1.  **Installation:** Download and unzip the application.
-2.  **Run:** Open the `.exe` file
-3.  **Audio Setup:**  Set the application's output device to **CABLE Input**.
-    In VRChat, set your microphone input to **CABLE Output**.
-4.  **Refocusing:** While in-game, press **Right Shift** to quickly bring the focus back to the application for typing. You can set always on top in the settings.
-5.  **Configure:**  endpoints and adjust more settings in Settings.
+## Modes
+Open `Settings` and choose one mode:
+- `Windows Offline`: uses local Windows voices and local rate/volume controls.
+- `Edge TTS`: uses Microsoft Edge online voices, with Edge voice/rate/volume/pitch controls.
+- `OpenAI-Compatible`: uses a configurable remote endpoint, API key, model, voice, and speed.
 
-## ⌨️ Controls
+## How To Use
+1. Download and unzip the app.
+2. Run the `.exe`.
+3. Set app output to `CABLE Input`.
+4. In VRChat, set microphone input to `CABLE Output`.
+5. Use `Right Shift` in-game to refocus the app quickly.
+6. Open `Settings` to choose mode and tune parameters.
+
+## Controls
 | Key | Function |
 | :--- | :--- |
-| **Right Shift** | Re-focus the application window |
-
----
-
-*Made 100% with cc and GLM5.1*
+| `Right Shift` | Refocus application window |
