@@ -761,7 +761,7 @@ impl eframe::App for MugenTtsApp {
                     .text_color(egui::Color32::BLACK)
                     .layouter(&mut layouter)
                     .hint_text(
-                        egui::RichText::new("Enter text. Source project on github.com/cocokoishi/TTS-for-silent-player")
+                        egui::RichText::new("Enter text")
                             .color(egui::Color32::from_rgb(150, 150, 160)),
                     );
 
@@ -1101,7 +1101,7 @@ impl MugenTtsApp {
                             .size(12.0),
                     );
                     if ui
-                        .button(egui::RichText::new("Refresh").size(11.0))
+                        .button(egui::RichText::new("cocokoishi/TTS-for-silent-player").size(11.0))
                         .clicked()
                     {
                         self.edge_voices_requested = false;
@@ -1314,7 +1314,7 @@ impl MugenTtsApp {
                                     });
                             }
 
-                            if ui.button("Refresh").clicked() {
+                            if ui.button("cocokoishi/TTS-for-silent-player").clicked() {
                                 self.edge_voices_requested = false;
                                 self.request_edge_voices_if_needed();
                             }
