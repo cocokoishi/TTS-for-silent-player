@@ -1,9 +1,13 @@
 use crate::remote_tts::{RemoteSettings, RemoteTts, RemoteTtsCommand, RemoteTtsEvent};
 use crate::settings::Settings;
 use crate::tts_bridge::{TtsBridge, TtsCommand, TtsEvent};
+use crate::vrchat_osc::{
+    clamp_history_count, send_chatbox_input, truncate_for_chatbox, VRCHAT_CHATBOX_MAX_LINES,
+};
 use eframe::egui;
 #[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -68,6 +72,7 @@ pub struct MugenTtsApp {
     show_remote_error_notice: bool,
     last_applied_window_opacity: Option<u8>,
     pending_window_opacity_reapply_frames: u8,
+    vrchat_recent_red_chunks: VecDeque<String>,
 }
 
 impl MugenTtsApp {
@@ -101,6 +106,7 @@ impl MugenTtsApp {
             show_remote_error_notice: false,
             last_applied_window_opacity: None,
             pending_window_opacity_reapply_frames: 45,
+            vrchat_recent_red_chunks: VecDeque::new(),
         }
     }
 
@@ -166,6 +172,7 @@ impl MugenTtsApp {
         self.reading_end = safe_target;
         self.is_speaking = true;
         self.speak_start_time = Instant::now();
+        self.push_vrchat_chatbox_update(&chunk);
 
         if self.settings.use_remote_tts {
             let remote_settings = RemoteSettings {
@@ -260,6 +267,57 @@ impl MugenTtsApp {
         fixed_text.push_str(&new_changed[..new_changed.len() - 1]);
         fixed_text.push_str(&new_text[new_changed_end..]);
         Some(fixed_text)
+    }
+
+    fn push_vrchat_chatbox_update(&mut self, chunk: &str) {
+        let line = chunk.trim();
+        if line.is_empty() {
+            return;
+        }
+
+        self.vrchat_recent_red_chunks.push_back(line.to_string());
+        while self.vrchat_recent_red_chunks.len() > VRCHAT_CHATBOX_MAX_LINES as usize {
+            self.vrchat_recent_red_chunks.pop_front();
+        }
+
+        if !self.settings.vrchat_osc_enabled {
+            return;
+        }
+
+        if let Some(chatbox_text) = self.build_vrchat_chatbox_text() {
+            let _ = send_chatbox_input(&chatbox_text);
+        }
+    }
+
+    fn build_vrchat_chatbox_text(&self) -> Option<String> {
+        let history_count = clamp_history_count(self.settings.vrchat_osc_history_count) as usize;
+        let recent_lines: Vec<&str> = self
+            .vrchat_recent_red_chunks
+            .iter()
+            .rev()
+            .take(history_count)
+            .map(|line| line.as_str())
+            .collect();
+
+        if recent_lines.is_empty() {
+            return None;
+        }
+
+        let combined = recent_lines
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let truncated = truncate_for_chatbox(&combined);
+        if truncated.is_empty() {
+            None
+        } else {
+            Some(truncated)
+        }
+    }
+
+    fn clear_vrchat_chatbox_history(&mut self) {
+        self.vrchat_recent_red_chunks.clear();
     }
 
     fn is_trigger_char(c: char) -> bool {
@@ -577,6 +635,7 @@ impl eframe::App for MugenTtsApp {
                         self.read_end = 0;
                         self.reading_end = 0;
                         self.pending_trigger_end = None;
+                        self.clear_vrchat_chatbox_history();
                         self.tts.send(TtsCommand::Stop);
                         self.remote_tts.send(RemoteTtsCommand::Stop);
                         self.is_speaking = false;
@@ -643,6 +702,9 @@ impl eframe::App for MugenTtsApp {
             self.scroll_to_bottom = true;
             if self.text != old_text {
                 let cpl = Self::get_common_prefix_len(&old_text, &self.text);
+                if cpl < self.read_end || cpl < self.reading_end {
+                    self.clear_vrchat_chatbox_history();
+                }
                 self.read_end = self.read_end.min(cpl);
                 self.reading_end = self.reading_end.min(cpl);
                 self.pending_trigger_end = self.pending_trigger_end.map(|pending| pending.min(cpl));
@@ -916,6 +978,48 @@ impl MugenTtsApp {
 
             ui.add_space(2.0);
 
+            ui.horizontal(|ui| {
+                let cb = ui.checkbox(
+                    &mut self.settings.vrchat_osc_enabled,
+                    egui::RichText::new("VRChat OSC")
+                        .color(egui::Color32::from_rgb(80, 80, 90))
+                        .size(12.0),
+                );
+                if cb.changed() {
+                    self.settings.save();
+                }
+            });
+
+            ui.add_enabled_ui(self.settings.vrchat_osc_enabled, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("OSC history")
+                            .color(egui::Color32::from_rgb(80, 80, 90))
+                            .size(12.0),
+                    );
+                    let slider = ui.add(
+                        egui::Slider::new(
+                            &mut self.settings.vrchat_osc_history_count,
+                            1..=VRCHAT_CHATBOX_MAX_LINES,
+                        )
+                        .show_value(false)
+                        .text(""),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!("{}", self.settings.vrchat_osc_history_count))
+                            .color(egui::Color32::from_rgb(80, 80, 90))
+                            .size(12.0),
+                    );
+                    if slider.changed() {
+                        self.settings.vrchat_osc_history_count =
+                            clamp_history_count(self.settings.vrchat_osc_history_count);
+                        self.settings.save();
+                    }
+                });
+            });
+
+            ui.add_space(2.0);
+
             // Clear text button
             ui.horizontal(|ui| {
                 if ui
@@ -934,6 +1038,7 @@ impl MugenTtsApp {
                     self.read_end = 0;
                     self.reading_end = 0;
                     self.pending_trigger_end = None;
+                    self.clear_vrchat_chatbox_history();
                     self.tts.send(TtsCommand::Stop);
                     self.remote_tts.send(RemoteTtsCommand::Stop);
                     self.is_speaking = false;

@@ -145,14 +145,15 @@ impl TtsBridge {
 
         let mut cmd = Command::new("powershell");
         cmd.args([
-                "-NoProfile",
-                "-ExecutionPolicy", "Bypass",
-                "-File",
-                &script_path.to_string_lossy(),
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &script_path.to_string_lossy(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
 
         // Hide the PowerShell console window on Windows
         #[cfg(windows)]
@@ -246,5 +247,3 @@ impl TtsBridge {
         events
     }
 }
-
-

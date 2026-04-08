@@ -160,8 +160,9 @@ impl RemoteTts {
                                                     is_playing = true;
                                                     eprintln!("[RemoteTTS] Queued audio");
                                                     if consecutive_failures >= 3 {
-                                                        let _ =
-                                                            event_tx.send(RemoteTtsEvent::ConnectionRecovered);
+                                                        let _ = event_tx.send(
+                                                            RemoteTtsEvent::ConnectionRecovered,
+                                                        );
                                                     }
                                                     consecutive_failures = 0;
                                                 }
@@ -263,8 +264,7 @@ impl RemoteTts {
 
         eprintln!(
             "[RemoteTTS] Reading audio response (chunked={}, content_length={:?})",
-            is_chunked,
-            content_length
+            is_chunked, content_length
         );
 
         let mut bytes = Vec::with_capacity(content_length.unwrap_or(0) as usize);

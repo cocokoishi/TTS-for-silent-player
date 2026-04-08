@@ -1,9 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod remote_tts;
 mod settings;
 mod tts_bridge;
-mod remote_tts;
+mod vrchat_osc;
 
 use app::{apply_window_opacity, MugenTtsApp};
 use eframe::egui;
@@ -66,7 +67,7 @@ fn main() -> eframe::Result<()> {
         .with_min_inner_size([300.0, 150.0])
         .with_title("Mugen TTS")
         .with_decorations(true);
-        
+
     if settings.always_on_top {
         viewport = viewport.with_always_on_top();
     }

@@ -11,6 +11,8 @@ pub struct Settings {
     pub window_opacity: u8,
     pub always_on_top: bool,
     pub speak_on_enter_only: bool,
+    pub vrchat_osc_enabled: bool,
+    pub vrchat_osc_history_count: u8,
     // Remote TTS settings
     pub use_remote_tts: bool,
     pub remote_api_url: String,
@@ -30,6 +32,8 @@ impl Default for Settings {
             window_opacity: 66,
             always_on_top: false,
             speak_on_enter_only: true,
+            vrchat_osc_enabled: false,
+            vrchat_osc_history_count: 2,
             use_remote_tts: false,
             remote_api_url: "https://api.openai.com/v1/audio/speech".to_string(),
             remote_api_key: String::new(),
@@ -42,7 +46,9 @@ impl Default for Settings {
 
 impl Settings {
     fn config_path() -> Option<PathBuf> {
-        std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("settings.json")))
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("settings.json")))
     }
 
     pub fn load() -> Self {
