@@ -83,7 +83,7 @@ impl Default for Settings {
         Self {
             voice_name: String::new(),
             output_device: String::new(),
-            play_on_default_speaker: false,
+            play_on_default_speaker: true,
             rate: 0,
             volume: 100,
             window_opacity: 80,
