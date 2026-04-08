@@ -430,7 +430,11 @@ impl MugenTtsApp {
             .into_iter()
             .rev()
             .collect::<Vec<_>>()
-            .join("\n");
+            .join(if self.settings.vrchat_osc_use_newlines {
+                "\n"
+            } else {
+                " "
+            });
         let truncated = truncate_for_chatbox(&combined);
         if truncated.is_empty() {
             None
@@ -1272,6 +1276,21 @@ impl MugenTtsApp {
                             clamp_history_count(self.settings.vrchat_osc_history_count);
                         self.settings.save();
                     }
+
+                    ui.add_space(8.0);
+
+                    let newline_cb = ui.checkbox(
+                        &mut self.settings.vrchat_osc_use_newlines,
+                        egui::RichText::new("Use line breaks")
+                            .color(egui::Color32::from_rgb(80, 80, 90))
+                            .size(12.0),
+                    );
+                    if newline_cb.changed() {
+                        self.settings.save();
+                    }
+                    newline_cb.on_hover_text(
+                        "Off: join OSC history with spaces. On: show each history item on a new line.",
+                    );
                 });
             });
         });
