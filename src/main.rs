@@ -8,7 +8,9 @@ mod remote_tts;
 use app::MugenTtsApp;
 use eframe::egui;
 use settings::Settings;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+#[cfg(windows)]
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -122,6 +124,7 @@ fn hotkey_listener(focus_flag: Arc<AtomicBool>) {
 
     #[cfg(not(windows))]
     {
+        let _ = focus_flag;
         // No-op on non-Windows
         loop {
             thread::sleep(Duration::from_secs(60));

@@ -1,6 +1,6 @@
 use crate::settings::Settings;
 use crate::tts_bridge::{TtsBridge, TtsCommand, TtsEvent};
-use crate::remote_tts::{RemoteTts, RemoteTtsCommand, RemoteSettings};
+use crate::remote_tts::{RemoteTts, RemoteTtsCommand, RemoteTtsEvent, RemoteSettings};
 use eframe::egui;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -10,6 +10,7 @@ pub struct MugenTtsApp {
     text: String,
     read_end: usize,      // fully read (blue) boundary in bytes
     reading_end: usize,    // currently reading (red) boundary in bytes
+    pending_trigger_end: Option<usize>,
     is_speaking: bool,
     tts: TtsBridge,
     remote_tts: RemoteTts,
@@ -27,6 +28,7 @@ pub struct MugenTtsApp {
     pending_list: u8, // bit 0 = voices, bit 1 = devices
     scroll_to_bottom: bool,
     ime_composing: bool,
+    show_remote_error_notice: bool,
 }
 
 impl MugenTtsApp {
@@ -39,6 +41,7 @@ impl MugenTtsApp {
             text: String::new(),
             read_end: 0,
             reading_end: 0,
+            pending_trigger_end: None,
             is_speaking: false,
             tts,
             remote_tts,
@@ -56,6 +59,7 @@ impl MugenTtsApp {
             pending_list: 0,
             scroll_to_bottom: false,
             ime_composing: false,
+            show_remote_error_notice: false,
         }
     }
 
@@ -85,27 +89,36 @@ impl MugenTtsApp {
         (re, rge)
     }
 
-    fn trigger_speak(&mut self) {
-        self.trigger_speak_up_to(self.text.len());
-    }
-
-    fn trigger_speak_up_to(&mut self, target_idx: usize) {
-        let (_, rge) = Self::get_safe_boundaries(&self.text, self.read_end, self.reading_end);
+    fn queue_or_trigger_speak_up_to(&mut self, target_idx: usize) {
         let (_, safe_target) = Self::get_safe_boundaries(&self.text, target_idx, target_idx);
-
-        if safe_target <= rge {
+        if self.is_speaking {
+            self.pending_trigger_end = Some(
+                self.pending_trigger_end
+                    .map(|pending| pending.max(safe_target))
+                    .unwrap_or(safe_target),
+            );
             return;
         }
 
-        let chunk = self.text[rge..safe_target].to_string();
+        self.trigger_speak_up_to(safe_target);
+    }
+
+    fn trigger_speak_up_to(&mut self, target_idx: usize) {
+        let (safe_read_end, _) = Self::get_safe_boundaries(&self.text, self.read_end, self.read_end);
+        let (_, safe_target) = Self::get_safe_boundaries(&self.text, target_idx, target_idx);
+
+        if safe_target <= safe_read_end {
+            return;
+        }
+
+        let chunk = self.text[safe_read_end..safe_target].to_string();
         if chunk.trim().is_empty() {
             // Unread portion was just spaces, skip speaking but advance pointers
-            self.read_end = rge;
+            self.read_end = safe_target;
             self.reading_end = safe_target;
             return;
         }
 
-        self.read_end = rge;
         self.reading_end = safe_target;
         self.is_speaking = true;
         self.speak_start_time = Instant::now();
@@ -129,6 +142,25 @@ impl MugenTtsApp {
         } else {
             self.tts.send(TtsCommand::Speak(chunk));
         }
+    }
+
+    fn finish_current_speech(&mut self) {
+        if self.is_speaking {
+            self.read_end = self.reading_end;
+            self.is_speaking = false;
+        }
+
+        if let Some(next_target) = self.pending_trigger_end.take() {
+            if next_target > self.read_end {
+                self.trigger_speak_up_to(next_target);
+            }
+        }
+    }
+
+    fn fail_current_speech(&mut self) {
+        self.reading_end = self.read_end;
+        self.pending_trigger_end = None;
+        self.is_speaking = false;
     }
 
     fn get_common_prefix_len(a: &str, b: &str) -> usize {
@@ -212,11 +244,39 @@ impl eframe::App for MugenTtsApp {
                 TtsEvent::SpeakingState(speaking) => {
                     // Only care about speaking state if NOT using remote TTS
                     if !self.settings.use_remote_tts && !speaking && self.is_speaking {
-                        self.read_end = self.reading_end;
-                        self.is_speaking = false;
+                        self.finish_current_speech();
                     }
                 }
-                TtsEvent::Error(_e) => {}
+                TtsEvent::Error(_e) => {
+                    if !self.settings.use_remote_tts {
+                        self.fail_current_speech();
+                    }
+                }
+            }
+        }
+
+        for event in self.remote_tts.poll_events() {
+            match event {
+                RemoteTtsEvent::PlaybackFinished => {
+                    if self.settings.use_remote_tts {
+                        self.finish_current_speech();
+                    }
+                }
+                RemoteTtsEvent::SpeakFailed {
+                    message: _message,
+                    consecutive_failures: _consecutive_failures,
+                    sticky_error,
+                } => {
+                    if sticky_error {
+                        self.show_remote_error_notice = true;
+                    }
+                    if self.settings.use_remote_tts {
+                        self.fail_current_speech();
+                    }
+                }
+                RemoteTtsEvent::ConnectionRecovered => {
+                    self.show_remote_error_notice = false;
+                }
             }
         }
 
@@ -395,7 +455,9 @@ impl eframe::App for MugenTtsApp {
                         self.text.clear();
                         self.read_end = 0;
                         self.reading_end = 0;
+                        self.pending_trigger_end = None;
                         self.tts.send(TtsCommand::Stop);
+                        self.remote_tts.send(RemoteTtsCommand::Stop);
                         self.is_speaking = false;
                     }
 
@@ -425,8 +487,24 @@ impl eframe::App for MugenTtsApp {
                 });
             });
 
-        // Detect clipboard paste
-        let pasted = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))));
+        if self.show_remote_error_notice {
+            egui::Area::new(egui::Id::new("remote_error_notice"))
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -12.0))
+                .interactable(false)
+                .show(ctx, |ui| {
+                    egui::Frame::default()
+                        .fill(egui::Color32::from_rgba_unmultiplied(150, 30, 30, 150))
+                        .rounding(egui::Rounding::same(8.0))
+                        .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new("remote server error")
+                                    .color(egui::Color32::from_rgb(255, 245, 245))
+                                    .size(13.0),
+                            );
+                        });
+                });
+        }
 
         // If IME just committed, the Enter key may have also inserted a spurious
         // newline into the multiline TextEdit. Strip it so the text stays on one line.
@@ -435,19 +513,20 @@ impl eframe::App for MugenTtsApp {
         }
 
         // Handle text detection AFTER the UI has been drawn (no borrow conflict)
-        if self.text != old_text || enter_pressed || pasted {
+        if self.text != old_text || enter_pressed {
             self.scroll_to_bottom = true;
             if self.text != old_text {
                 let cpl = Self::get_common_prefix_len(&old_text, &self.text);
                 self.read_end = self.read_end.min(cpl);
                 self.reading_end = self.reading_end.min(cpl);
+                self.pending_trigger_end = self.pending_trigger_end.map(|pending| pending.min(cpl));
             }
 
             let mut trigger_idx = None;
             let (_, rge) = Self::get_safe_boundaries(&self.text, self.read_end, self.reading_end);
 
-            if enter_pressed || pasted {
-                // Read everything on Enter or Paste
+            if enter_pressed {
+                // Read everything on Enter
                 trigger_idx = Some(self.text.len());
             } else if self.text != old_text && !self.settings.speak_on_enter_only {
                 // Scan unread portion for trigger chars (punctuation, or space after CJK)
@@ -473,7 +552,7 @@ impl eframe::App for MugenTtsApp {
 
             if let Some(idx) = trigger_idx {
                 if idx > rge {
-                    self.trigger_speak_up_to(idx);
+                    self.queue_or_trigger_speak_up_to(idx);
                 }
             }
         }
@@ -509,6 +588,9 @@ impl MugenTtsApp {
                 let cb = ui.checkbox(&mut self.settings.use_remote_tts, egui::RichText::new("Remote TTS (OpenAI)").color(egui::Color32::from_rgb(80, 80, 90)).size(12.0));
                 if cb.changed() {
                     self.settings.save();
+                    self.pending_trigger_end = None;
+                    self.reading_end = self.read_end;
+                    self.is_speaking = false;
                     if self.settings.use_remote_tts {
                         self.tts.send(TtsCommand::Stop);
                     } else {
@@ -655,6 +737,7 @@ impl MugenTtsApp {
                     self.text.clear();
                     self.read_end = 0;
                     self.reading_end = 0;
+                    self.pending_trigger_end = None;
                     self.tts.send(TtsCommand::Stop);
                     self.remote_tts.send(RemoteTtsCommand::Stop);
                     self.is_speaking = false;
