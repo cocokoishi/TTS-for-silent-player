@@ -1134,7 +1134,7 @@ impl MugenTtsApp {
                         .size(12.0),
                 );
                 let slider = ui.add(
-                    egui::Slider::new(&mut self.settings.window_opacity, 1..=100)
+                    egui::Slider::new(&mut self.settings.window_opacity, 44..=100)
                         .show_value(false)
                         .text(""),
                 );
