@@ -7,7 +7,7 @@ A lightweight Text-to-Speech (TTS) application designed specifically for "Mute" 
 ## 🚀 Features
 * **Ultra-Lightweight:** Only calls native system voice functions to keep CPU/RAM usage at a minimum.
 * **Simple Operation:** No complex configuration required—just run and speak.
-
+* **OpenAI endpoint support:** Remote servers can be used to inference requests.
 ## 📋 Prerequisites
 * **OS:** Windows PC.
 * **Driver:** You must have **VB-CABLE** (Virtual Audio Cable) installed to route the audio into VRChat. You can download it from https://vb-audio.com/Cable/index.htm .  
@@ -18,6 +18,7 @@ A lightweight Text-to-Speech (TTS) application designed specifically for "Mute" 
 3.  **Audio Setup:**  Set the application's output device to **CABLE Input**.
     In VRChat, set your microphone input to **CABLE Output**.
 4.  **Refocusing:** While in-game, press **Right Shift** to quickly bring the focus back to the application for typing. You can set always on top in the settings.
+5.  **Configure:**  endpoints and adjust more settings in Settings.
 
 ## ⌨️ Controls
 | Key | Function |
