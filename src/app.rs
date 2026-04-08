@@ -1,6 +1,6 @@
+use crate::remote_tts::{RemoteSettings, RemoteTts, RemoteTtsCommand, RemoteTtsEvent};
 use crate::settings::Settings;
 use crate::tts_bridge::{TtsBridge, TtsCommand, TtsEvent};
-use crate::remote_tts::{RemoteTts, RemoteTtsCommand, RemoteTtsEvent, RemoteSettings};
 use eframe::egui;
 #[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -45,8 +45,8 @@ pub(crate) fn apply_window_opacity<T>(_target: &T, _opacity: u8) -> bool {
 
 pub struct MugenTtsApp {
     text: String,
-    read_end: usize,      // fully read (blue) boundary in bytes
-    reading_end: usize,    // currently reading (red) boundary in bytes
+    read_end: usize,    // fully read (blue) boundary in bytes
+    reading_end: usize, // currently reading (red) boundary in bytes
     pending_trigger_end: Option<usize>,
     is_speaking: bool,
     tts: TtsBridge,
@@ -67,6 +67,7 @@ pub struct MugenTtsApp {
     ime_composing: bool,
     show_remote_error_notice: bool,
     last_applied_window_opacity: Option<u8>,
+    pending_window_opacity_reapply_frames: u8,
 }
 
 impl MugenTtsApp {
@@ -99,15 +100,18 @@ impl MugenTtsApp {
             ime_composing: false,
             show_remote_error_notice: false,
             last_applied_window_opacity: None,
+            pending_window_opacity_reapply_frames: 45,
         }
     }
 
     fn apply_settings(&self) {
         if !self.settings.voice_name.is_empty() {
-            self.tts.send(TtsCommand::SetVoice(self.settings.voice_name.clone()));
+            self.tts
+                .send(TtsCommand::SetVoice(self.settings.voice_name.clone()));
         }
         if !self.settings.output_device.is_empty() {
-            self.tts.send(TtsCommand::SetDevice(self.settings.output_device.clone()));
+            self.tts
+                .send(TtsCommand::SetDevice(self.settings.output_device.clone()));
         }
         self.tts.send(TtsCommand::SetRate(self.settings.rate));
         self.tts.send(TtsCommand::SetVolume(self.settings.volume));
@@ -143,7 +147,8 @@ impl MugenTtsApp {
     }
 
     fn trigger_speak_up_to(&mut self, target_idx: usize) {
-        let (safe_read_end, _) = Self::get_safe_boundaries(&self.text, self.read_end, self.read_end);
+        let (safe_read_end, _) =
+            Self::get_safe_boundaries(&self.text, self.read_end, self.read_end);
         let (_, safe_target) = Self::get_safe_boundaries(&self.text, target_idx, target_idx);
 
         if safe_target <= safe_read_end {
@@ -171,9 +176,10 @@ impl MugenTtsApp {
                 speed: self.settings.remote_speed,
                 output_device: self.settings.output_device.clone(),
             };
-            self.remote_tts.send(RemoteTtsCommand::Speak(chunk, remote_settings));
-            
-            // For remote TTS, we don't have a direct status poll like SAPI, 
+            self.remote_tts
+                .send(RemoteTtsCommand::Speak(chunk, remote_settings));
+
+            // For remote TTS, we don't have a direct status poll like SAPI,
             // so we'll just roughly estimate completion or rely on manual reset.
             // But we can reset is_speaking after a short delay or if new text comes.
             // For now, let's keep is_speaking true until next trigger or manual reset.
@@ -214,10 +220,64 @@ impl MugenTtsApp {
         len
     }
 
+    fn get_text_change_ranges(old_text: &str, new_text: &str) -> (usize, usize, usize) {
+        let prefix_len = Self::get_common_prefix_len(old_text, new_text);
+        let mut old_changed_end = old_text.len();
+        let mut new_changed_end = new_text.len();
+
+        while old_changed_end > prefix_len && new_changed_end > prefix_len {
+            let old_char = old_text[..old_changed_end].chars().next_back().unwrap();
+            let new_char = new_text[..new_changed_end].chars().next_back().unwrap();
+            if old_char != new_char {
+                break;
+            }
+
+            let char_len = old_char.len_utf8();
+            old_changed_end -= char_len;
+            new_changed_end -= char_len;
+        }
+
+        (prefix_len, old_changed_end, new_changed_end)
+    }
+
+    fn inserted_text_contains_newline(old_text: &str, new_text: &str) -> bool {
+        let (prefix_len, _, new_changed_end) = Self::get_text_change_ranges(old_text, new_text);
+        new_text[prefix_len..new_changed_end].contains('\n')
+    }
+
+    fn strip_spurious_ime_newline(old_text: &str, new_text: &str) -> Option<String> {
+        let (prefix_len, old_changed_end, new_changed_end) =
+            Self::get_text_change_ranges(old_text, new_text);
+        let old_changed = &old_text[prefix_len..old_changed_end];
+        let new_changed = &new_text[prefix_len..new_changed_end];
+
+        if !new_changed.ends_with('\n') || old_changed.ends_with('\n') {
+            return None;
+        }
+
+        let mut fixed_text = String::with_capacity(new_text.len().saturating_sub(1));
+        fixed_text.push_str(&new_text[..prefix_len]);
+        fixed_text.push_str(&new_changed[..new_changed.len() - 1]);
+        fixed_text.push_str(&new_text[new_changed_end..]);
+        Some(fixed_text)
+    }
+
     fn is_trigger_char(c: char) -> bool {
-        c == '\n' || c == ',' || c == '.' || c == '!' || c == '?'
-            || c == ';' || c == ':' || c == '、' || c == '。' || c == '！'
-            || c == '？' || c == '，' || c == '；' || c == '：' || c == '…'
+        c == '\n'
+            || c == ','
+            || c == '.'
+            || c == '!'
+            || c == '?'
+            || c == ';'
+            || c == ':'
+            || c == '、'
+            || c == '。'
+            || c == '！'
+            || c == '？'
+            || c == '，'
+            || c == '；'
+            || c == '：'
+            || c == '…'
     }
 
     fn is_cjk_char(c: char) -> bool {
@@ -233,10 +293,19 @@ impl MugenTtsApp {
 
 impl eframe::App for MugenTtsApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        if self.last_applied_window_opacity != Some(self.settings.window_opacity)
-            && apply_window_opacity(frame, self.settings.window_opacity)
+        let should_retry_window_opacity = self.pending_window_opacity_reapply_frames > 0;
+        if should_retry_window_opacity
+            || self.last_applied_window_opacity != Some(self.settings.window_opacity)
         {
-            self.last_applied_window_opacity = Some(self.settings.window_opacity);
+            if apply_window_opacity(frame, self.settings.window_opacity) {
+                self.last_applied_window_opacity = Some(self.settings.window_opacity);
+            }
+
+            if should_retry_window_opacity {
+                self.pending_window_opacity_reapply_frames =
+                    self.pending_window_opacity_reapply_frames.saturating_sub(1);
+                ctx.request_repaint();
+            }
         }
         // Process TTS events
         for event in self.tts.poll_events() {
@@ -249,7 +318,13 @@ impl eframe::App for MugenTtsApp {
                 TtsEvent::Voices(v) => {
                     self.voices = v;
                     if self.settings.voice_name.is_empty() {
-                        if let Some(cn_voice) = self.voices.iter().find(|x| x.contains("Chinese") || x.contains("Han") || x.contains("Huihui") || x.contains("Yaoyao") || x.contains("Kangkang")) {
+                        if let Some(cn_voice) = self.voices.iter().find(|x| {
+                            x.contains("Chinese")
+                                || x.contains("Han")
+                                || x.contains("Huihui")
+                                || x.contains("Yaoyao")
+                                || x.contains("Kangkang")
+                        }) {
                             self.settings.voice_name = cn_voice.clone();
                             self.tts.send(TtsCommand::SetVoice(cn_voice.clone()));
                         } else if let Some(first) = self.voices.first() {
@@ -259,7 +334,8 @@ impl eframe::App for MugenTtsApp {
                         self.settings.save();
                     }
                     // Find selected index
-                    self.selected_voice_idx = self.voices
+                    self.selected_voice_idx = self
+                        .voices
                         .iter()
                         .position(|n| n == &self.settings.voice_name)
                         .unwrap_or(0);
@@ -271,13 +347,18 @@ impl eframe::App for MugenTtsApp {
                 TtsEvent::Devices(d) => {
                     self.devices = d;
                     if self.settings.output_device.is_empty() {
-                        if let Some(cable) = self.devices.iter().find(|x| x.to_lowercase().contains("cable")) {
+                        if let Some(cable) = self
+                            .devices
+                            .iter()
+                            .find(|x| x.to_lowercase().contains("cable"))
+                        {
                             self.settings.output_device = cable.clone();
                             self.tts.send(TtsCommand::SetDevice(cable.clone()));
                             self.settings.save();
                         }
                     }
-                    self.selected_device_idx = self.devices
+                    self.selected_device_idx = self
+                        .devices
                         .iter()
                         .position(|n| n.contains(&self.settings.output_device))
                         .unwrap_or(0);
@@ -325,7 +406,11 @@ impl eframe::App for MugenTtsApp {
         }
 
         // Poll speaking status periodically (wait at least 400ms after starting to speak before polling to avoid queueing race condition)
-        if !self.settings.use_remote_tts && self.is_speaking && self.speak_start_time.elapsed().as_millis() > 400 && self.last_status_poll.elapsed().as_millis() > 100 {
+        if !self.settings.use_remote_tts
+            && self.is_speaking
+            && self.speak_start_time.elapsed().as_millis() > 400
+            && self.last_status_poll.elapsed().as_millis() > 100
+        {
             self.tts.send(TtsCommand::QueryStatus);
             self.last_status_poll = Instant::now();
         }
@@ -368,11 +453,11 @@ impl eframe::App for MugenTtsApp {
 
         // Capture old text before UI modifies it
         let old_text = self.text.clone();
-        let mut enter_pressed = false;
 
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             // Allow dragging the window from any unoccupied space in CentralPanel
-            let drag_response = ui.interact(ui.max_rect(), ui.id().with("bg_drag"), egui::Sense::drag());
+            let drag_response =
+                ui.interact(ui.max_rect(), ui.id().with("bg_drag"), egui::Sense::drag());
             if drag_response.dragged() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
@@ -465,18 +550,8 @@ impl eframe::App for MugenTtsApp {
                             .color(egui::Color32::from_rgb(150, 150, 160)),
                     );
 
-                let response = ui.add(text_edit);
-                // Only treat Enter as a TTS trigger when NOT in IME composition
-                // and NOT immediately after an IME commit (which also fires Enter)
-                if response.has_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    && !self.ime_composing
-                    && !ime_committed_this_frame
-                {
-                    enter_pressed = true;
-                }
+                ui.add(text_edit);
             });
-
         });
 
         // Floating buttons overlaid in top right (70% transparent)
@@ -485,15 +560,17 @@ impl eframe::App for MugenTtsApp {
             .interactable(true)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    let reset_btn = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("⏹ Reset")
-                                .size(13.0)
-                                .color(egui::Color32::from_rgba_unmultiplied(200, 80, 80, 180)),
+                    let reset_btn = ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("⏹ Reset")
+                                    .size(13.0)
+                                    .color(egui::Color32::from_rgba_unmultiplied(200, 80, 80, 180)),
+                            )
+                            .fill(egui::Color32::from_rgba_unmultiplied(230, 230, 235, 77))
+                            .rounding(egui::Rounding::same(4.0)),
                         )
-                        .fill(egui::Color32::from_rgba_unmultiplied(230, 230, 235, 77))
-                        .rounding(egui::Rounding::same(4.0)),
-                    ).on_hover_text("Stop speaking and clear text");
+                        .on_hover_text("Stop speaking and clear text");
 
                     if reset_btn.clicked() {
                         self.text.clear();
@@ -508,15 +585,13 @@ impl eframe::App for MugenTtsApp {
                     ui.add_space(4.0);
 
                     let settings_btn = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("⚙")
-                                .size(16.0)
-                                .color(if self.show_settings {
-                                    egui::Color32::from_rgba_unmultiplied(80, 90, 200, 180)
-                                } else {
-                                    egui::Color32::from_rgba_unmultiplied(100, 100, 110, 180)
-                                })
-                        )
+                        egui::Button::new(egui::RichText::new("⚙").size(16.0).color(
+                            if self.show_settings {
+                                egui::Color32::from_rgba_unmultiplied(80, 90, 200, 180)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(100, 100, 110, 180)
+                            },
+                        ))
                         .fill(egui::Color32::from_rgba_unmultiplied(230, 230, 235, 77))
                         .rounding(egui::Rounding::same(4.0)),
                     );
@@ -550,14 +625,21 @@ impl eframe::App for MugenTtsApp {
                 });
         }
 
-        // If IME just committed, the Enter key may have also inserted a spurious
-        // newline into the multiline TextEdit. Strip it so the text stays on one line.
-        if ime_committed_this_frame && self.text.ends_with('\n') && !old_text.ends_with('\n') {
-            self.text.pop(); // remove the trailing '\n' inserted by Enter
+        // Some IMEs emit both a commit and a trailing Enter into multiline TextEdit.
+        // Strip only the synthetic newline from the actual edited span.
+        if ime_committed_this_frame {
+            if let Some(fixed_text) = Self::strip_spurious_ime_newline(&old_text, &self.text) {
+                self.text = fixed_text;
+            }
         }
 
+        let enter_triggered = self.text != old_text
+            && Self::inserted_text_contains_newline(&old_text, &self.text)
+            && !self.ime_composing
+            && !ime_committed_this_frame;
+
         // Handle text detection AFTER the UI has been drawn (no borrow conflict)
-        if self.text != old_text || enter_pressed {
+        if self.text != old_text || enter_triggered {
             self.scroll_to_bottom = true;
             if self.text != old_text {
                 let cpl = Self::get_common_prefix_len(&old_text, &self.text);
@@ -569,7 +651,7 @@ impl eframe::App for MugenTtsApp {
             let mut trigger_idx = None;
             let (_, rge) = Self::get_safe_boundaries(&self.text, self.read_end, self.reading_end);
 
-            if enter_pressed {
+            if enter_triggered {
                 // Read everything on Enter
                 trigger_idx = Some(self.text.len());
             } else if self.text != old_text && !self.settings.speak_on_enter_only {
@@ -607,11 +689,19 @@ impl eframe::App for MugenTtsApp {
 }
 
 impl MugenTtsApp {
-    fn render_settings(&mut self, ui: &mut egui::Ui, panel_bg: egui::Color32, _accent: egui::Color32) {
+    fn render_settings(
+        &mut self,
+        ui: &mut egui::Ui,
+        panel_bg: egui::Color32,
+        _accent: egui::Color32,
+    ) {
         let settings_frame = egui::Frame::default()
             .fill(panel_bg)
             .rounding(egui::Rounding::same(8.0))
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 200, 210)))
+            .stroke(egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgb(200, 200, 210),
+            ))
             .inner_margin(egui::Margin::same(12.0));
 
         settings_frame.show(ui, |ui| {
@@ -626,10 +716,15 @@ impl MugenTtsApp {
             ui.add_space(4.0);
 
             ui.add_space(2.0);
-            
+
             // Remote TTS toggle
             ui.horizontal(|ui| {
-                let cb = ui.checkbox(&mut self.settings.use_remote_tts, egui::RichText::new("Remote TTS (OpenAI)").color(egui::Color32::from_rgb(80, 80, 90)).size(12.0));
+                let cb = ui.checkbox(
+                    &mut self.settings.use_remote_tts,
+                    egui::RichText::new("Remote TTS (OpenAI)")
+                        .color(egui::Color32::from_rgb(80, 80, 90))
+                        .size(12.0),
+                );
                 if cb.changed() {
                     self.settings.save();
                     self.pending_trigger_end = None;
@@ -641,9 +736,12 @@ impl MugenTtsApp {
                         self.remote_tts.send(RemoteTtsCommand::Stop);
                     }
                 }
-                
+
                 if self.settings.use_remote_tts {
-                    if ui.button(egui::RichText::new("⚙ Configure Remote").size(11.0)).clicked() {
+                    if ui
+                        .button(egui::RichText::new("⚙ Configure Remote").size(11.0))
+                        .clicked()
+                    {
                         self.show_remote_settings = true;
                     }
                 }
@@ -655,7 +753,11 @@ impl MugenTtsApp {
             ui.add_enabled_ui(!self.settings.use_remote_tts, |ui| {
                 // Voice selection
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Voice").color(egui::Color32::from_rgb(80, 80, 90)).size(12.0));
+                    ui.label(
+                        egui::RichText::new("Voice")
+                            .color(egui::Color32::from_rgb(80, 80, 90))
+                            .size(12.0),
+                    );
                     let current = if self.selected_voice_idx < self.voices.len() {
                         self.voices[self.selected_voice_idx].clone()
                     } else {
@@ -666,7 +768,10 @@ impl MugenTtsApp {
                         .width(ui.available_width() - 10.0)
                         .show_ui(ui, |ui| {
                             for (i, v) in self.voices.iter().enumerate() {
-                                if ui.selectable_label(i == self.selected_voice_idx, v).clicked() {
+                                if ui
+                                    .selectable_label(i == self.selected_voice_idx, v)
+                                    .clicked()
+                                {
                                     self.selected_voice_idx = i;
                                     self.settings.voice_name = v.clone();
                                     self.tts.send(TtsCommand::SetVoice(v.clone()));
@@ -680,7 +785,11 @@ impl MugenTtsApp {
 
                 // Output device selection
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Output").color(egui::Color32::from_rgb(80, 80, 90)).size(12.0));
+                    ui.label(
+                        egui::RichText::new("Output")
+                            .color(egui::Color32::from_rgb(80, 80, 90))
+                            .size(12.0),
+                    );
                     let current = if self.selected_device_idx < self.devices.len() {
                         self.devices[self.selected_device_idx].clone()
                     } else {
@@ -691,7 +800,10 @@ impl MugenTtsApp {
                         .width(ui.available_width() - 10.0)
                         .show_ui(ui, |ui| {
                             for (i, d) in self.devices.iter().enumerate() {
-                                if ui.selectable_label(i == self.selected_device_idx, d).clicked() {
+                                if ui
+                                    .selectable_label(i == self.selected_device_idx, d)
+                                    .clicked()
+                                {
                                     self.selected_device_idx = i;
                                     self.settings.output_device = d.clone();
                                     self.tts.send(TtsCommand::SetDevice(d.clone()));
@@ -705,11 +817,15 @@ impl MugenTtsApp {
 
                 // Rate slider
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Rate").color(egui::Color32::from_rgb(80, 80, 90)).size(12.0));
+                    ui.label(
+                        egui::RichText::new("Rate")
+                            .color(egui::Color32::from_rgb(80, 80, 90))
+                            .size(12.0),
+                    );
                     let slider = ui.add(
                         egui::Slider::new(&mut self.settings.rate, -5..=5)
                             .show_value(true)
-                            .text("")
+                            .text(""),
                     );
                     if slider.changed() {
                         self.tts.send(TtsCommand::SetRate(self.settings.rate));
@@ -719,11 +835,15 @@ impl MugenTtsApp {
 
                 // Volume slider
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Vol").color(egui::Color32::from_rgb(80, 80, 90)).size(12.0));
+                    ui.label(
+                        egui::RichText::new("Vol")
+                            .color(egui::Color32::from_rgb(80, 80, 90))
+                            .size(12.0),
+                    );
                     let slider = ui.add(
                         egui::Slider::new(&mut self.settings.volume, 0..=100)
                             .show_value(true)
-                            .text("")
+                            .text(""),
                     );
                     if slider.changed() {
                         self.tts.send(TtsCommand::SetVolume(self.settings.volume));
@@ -737,17 +857,19 @@ impl MugenTtsApp {
             // Global window opacity
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("Opacity").color(egui::Color32::from_rgb(80, 80, 90)).size(12.0)
+                    egui::RichText::new("Opacity")
+                        .color(egui::Color32::from_rgb(80, 80, 90))
+                        .size(12.0),
                 );
                 let slider = ui.add(
                     egui::Slider::new(&mut self.settings.window_opacity, 1..=100)
                         .show_value(false)
-                        .text("")
+                        .text(""),
                 );
                 ui.label(
                     egui::RichText::new(format!("{}%", self.settings.window_opacity))
                         .color(egui::Color32::from_rgb(80, 80, 90))
-                        .size(12.0)
+                        .size(12.0),
                 );
                 if slider.changed() {
                     self.settings.save();
@@ -760,17 +882,20 @@ impl MugenTtsApp {
             ui.horizontal(|ui| {
                 let cb = ui.checkbox(
                     &mut self.settings.always_on_top,
-                    egui::RichText::new("Always on top").color(egui::Color32::from_rgb(80, 80, 90)).size(12.0)
+                    egui::RichText::new("Always on top")
+                        .color(egui::Color32::from_rgb(80, 80, 90))
+                        .size(12.0),
                 );
                 if cb.changed() {
                     self.settings.save();
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-                        if self.settings.always_on_top {
-                            egui::WindowLevel::AlwaysOnTop
-                        } else {
-                            egui::WindowLevel::Normal
-                        }
-                    ));
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                            if self.settings.always_on_top {
+                                egui::WindowLevel::AlwaysOnTop
+                            } else {
+                                egui::WindowLevel::Normal
+                            },
+                        ));
                 }
             });
 
@@ -780,7 +905,9 @@ impl MugenTtsApp {
             ui.horizontal(|ui| {
                 let cb = ui.checkbox(
                     &mut self.settings.speak_on_enter_only,
-                    egui::RichText::new("Speak on Enter only").color(egui::Color32::from_rgb(80, 80, 90)).size(12.0)
+                    egui::RichText::new("Speak on Enter only")
+                        .color(egui::Color32::from_rgb(80, 80, 90))
+                        .size(12.0),
                 );
                 if cb.changed() {
                     self.settings.save();
@@ -791,15 +918,18 @@ impl MugenTtsApp {
 
             // Clear text button
             ui.horizontal(|ui| {
-                if ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("Clear text")
-                            .color(egui::Color32::from_rgb(60, 60, 70))
-                            .size(12.0),
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Clear text")
+                                .color(egui::Color32::from_rgb(60, 60, 70))
+                                .size(12.0),
+                        )
+                        .fill(egui::Color32::from_rgb(200, 200, 210))
+                        .rounding(egui::Rounding::same(4.0)),
                     )
-                    .fill(egui::Color32::from_rgb(200, 200, 210))
-                    .rounding(egui::Rounding::same(4.0))
-                ).clicked() {
+                    .clicked()
+                {
                     self.text.clear();
                     self.read_end = 0;
                     self.reading_end = 0;
@@ -821,32 +951,53 @@ impl MugenTtsApp {
                 .show(ctx, |ui| {
                     ui.vertical(|ui| {
                         ui.label("API Endpoint:");
-                        if ui.text_edit_singleline(&mut self.settings.remote_api_url).changed() {
+                        if ui
+                            .text_edit_singleline(&mut self.settings.remote_api_url)
+                            .changed()
+                        {
                             self.settings.save();
                         }
-                        
+
                         ui.label("API Key:");
-                        if ui.add(egui::TextEdit::singleline(&mut self.settings.remote_api_key).password(true)).changed() {
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut self.settings.remote_api_key)
+                                    .password(true),
+                            )
+                            .changed()
+                        {
                             self.settings.save();
                         }
 
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
                                 ui.label("Model:");
-                                if ui.text_edit_singleline(&mut self.settings.remote_model).changed() {
+                                if ui
+                                    .text_edit_singleline(&mut self.settings.remote_model)
+                                    .changed()
+                                {
                                     self.settings.save();
                                 }
                             });
                             ui.vertical(|ui| {
                                 ui.label("Voice:");
-                                if ui.text_edit_singleline(&mut self.settings.remote_voice).changed() {
+                                if ui
+                                    .text_edit_singleline(&mut self.settings.remote_voice)
+                                    .changed()
+                                {
                                     self.settings.save();
                                 }
                             });
                         });
 
                         ui.label(format!("Speed: {:.2}", self.settings.remote_speed));
-                        if ui.add(egui::Slider::new(&mut self.settings.remote_speed, 0.25..=4.0)).changed() {
+                        if ui
+                            .add(egui::Slider::new(
+                                &mut self.settings.remote_speed,
+                                0.25..=4.0,
+                            ))
+                            .changed()
+                        {
                             self.settings.save();
                         }
 
