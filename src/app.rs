@@ -12,7 +12,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 #[cfg(windows)]
 use windows::Win32::Foundation::{COLORREF, HWND};
 #[cfg(windows)]
@@ -69,6 +69,14 @@ pub(crate) fn apply_window_opacity<T>(_target: &T, _opacity: u8) -> bool {
     false
 }
 
+const VRCHAT_OSC_RESET_AFTER_SECONDS_MIN: u16 = 1;
+const VRCHAT_OSC_RESET_AFTER_SECONDS_MAX: u16 = 120;
+
+struct VrchatOscHistoryEntry {
+    text: String,
+    timestamp: Instant,
+}
+
 pub struct MugenTtsApp {
     text: String,
     read_end: usize,    // fully read (blue) boundary in bytes
@@ -102,7 +110,7 @@ pub struct MugenTtsApp {
     chinese_ui_locale: bool,
     last_applied_window_opacity: Option<u8>,
     pending_window_opacity_reapply_frames: u8,
-    vrchat_recent_red_chunks: VecDeque<String>,
+    vrchat_recent_red_chunks: VecDeque<VrchatOscHistoryEntry>,
 }
 
 impl MugenTtsApp {
@@ -275,6 +283,13 @@ impl MugenTtsApp {
         (re, rge)
     }
 
+    fn clamp_vrchat_osc_reset_after_seconds(seconds: u16) -> u16 {
+        seconds.clamp(
+            VRCHAT_OSC_RESET_AFTER_SECONDS_MIN,
+            VRCHAT_OSC_RESET_AFTER_SECONDS_MAX,
+        )
+    }
+
     fn queue_or_trigger_speak_up_to(&mut self, target_idx: usize) {
         let (_, safe_target) = Self::get_safe_boundaries(&self.text, target_idx, target_idx);
         if self.is_speaking {
@@ -398,7 +413,24 @@ impl MugenTtsApp {
             return;
         }
 
-        self.vrchat_recent_red_chunks.push_back(line.to_string());
+        let now = Instant::now();
+        let reset_after_seconds = Self::clamp_vrchat_osc_reset_after_seconds(
+            self.settings.vrchat_osc_reset_after_seconds,
+        );
+        if self.settings.vrchat_osc_reset_after_enabled
+            && self
+                .vrchat_recent_red_chunks
+                .back()
+                .map(|entry| entry.timestamp.elapsed() >= Duration::from_secs(reset_after_seconds as u64))
+                .unwrap_or(false)
+        {
+            self.vrchat_recent_red_chunks.clear();
+        }
+
+        self.vrchat_recent_red_chunks.push_back(VrchatOscHistoryEntry {
+            text: line.to_string(),
+            timestamp: now,
+        });
         while self.vrchat_recent_red_chunks.len() > VRCHAT_CHATBOX_MAX_LINES as usize {
             self.vrchat_recent_red_chunks.pop_front();
         }
@@ -419,7 +451,7 @@ impl MugenTtsApp {
             .iter()
             .rev()
             .take(history_count)
-            .map(|line| line.as_str())
+            .map(|entry| entry.text.as_str())
             .collect();
 
         if recent_lines.is_empty() {
@@ -1222,19 +1254,15 @@ impl MugenTtsApp {
                 mirror_cb.on_hover_text(
                     "Also mirror Windows Offline, Edge, and OpenAI-compatible playback to the current Windows default speaker.",
                 );
-            });
+                ui.add_space(8.0);
 
-            ui.add_space(2.0);
-
-            // Speak on enter only toggle
-            ui.horizontal(|ui| {
-                let cb = ui.checkbox(
+                let speak_on_enter_cb = ui.checkbox(
                     &mut self.settings.speak_on_enter_only,
-                    egui::RichText::new("Speak on Enter only")
+                    egui::RichText::new("Speak on Enter")
                         .color(egui::Color32::from_rgb(80, 80, 90))
                         .size(12.0),
                 );
-                if cb.changed() {
+                if speak_on_enter_cb.changed() {
                     self.settings.save();
                 }
             });
@@ -1291,6 +1319,55 @@ impl MugenTtsApp {
                     newline_cb.on_hover_text(
                         "Off: join OSC history with spaces. On: show each history item on a new line.",
                     );
+                });
+            });
+
+            ui.add_space(2.0);
+
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(self.settings.vrchat_osc_enabled, |ui| {
+                    let reset_cb = ui.checkbox(
+                        &mut self.settings.vrchat_osc_reset_after_enabled,
+                        egui::RichText::new("Reset OSC history after")
+                            .color(egui::Color32::from_rgb(80, 80, 90))
+                            .size(12.0),
+                    );
+                    if reset_cb.changed() {
+                        self.settings.save();
+                    }
+                    reset_cb.on_hover_text(
+                        "If the previous OSC message is older than this limit, start the next OSC update from the new message only.",
+                    );
+
+                    ui.add_space(8.0);
+
+                    let slider = ui.add_enabled(
+                        self.settings.vrchat_osc_reset_after_enabled,
+                        egui::Slider::new(
+                            &mut self.settings.vrchat_osc_reset_after_seconds,
+                            VRCHAT_OSC_RESET_AFTER_SECONDS_MIN
+                                ..=VRCHAT_OSC_RESET_AFTER_SECONDS_MAX,
+                        )
+                        .show_value(false)
+                        .text(""),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}s",
+                            Self::clamp_vrchat_osc_reset_after_seconds(
+                                self.settings.vrchat_osc_reset_after_seconds,
+                            )
+                        ))
+                        .color(egui::Color32::from_rgb(80, 80, 90))
+                        .size(12.0),
+                    );
+                    if slider.changed() {
+                        self.settings.vrchat_osc_reset_after_seconds =
+                            Self::clamp_vrchat_osc_reset_after_seconds(
+                                self.settings.vrchat_osc_reset_after_seconds,
+                            );
+                        self.settings.save();
+                    }
                 });
             });
         });
