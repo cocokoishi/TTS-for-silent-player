@@ -1015,20 +1015,22 @@ impl MugenTtsApp {
             .inner_margin(egui::Margin::same(12.0));
 
         settings_frame.show(ui, |ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .button(egui::RichText::new(self.tutorial_button_label()).size(11.0))
-                    .clicked()
-                {
-                    self.show_quick_start_guide = true;
-                }
-
+            ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new("Settings")
                         .color(egui::Color32::from_rgb(40, 40, 50))
                         .size(13.0)
                         .strong(),
                 );
+
+                ui.add_space(8.0);
+
+                if ui
+                    .button(egui::RichText::new(self.tutorial_button_label()).size(11.0))
+                    .clicked()
+                {
+                    self.show_quick_start_guide = true;
+                }
             });
             ui.add_space(4.0);
 
@@ -1600,18 +1602,21 @@ impl MugenTtsApp {
         egui::Window::new(title)
             .collapsible(false)
             .resizable(false)
+            .default_width(500.0)
+            .min_width(500.0)
+            .max_width(500.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.set_max_width(560.0);
-                ui.label(lead);
+                ui.set_width(500.0);
+                ui.add(egui::Label::new(lead).wrap());
                 ui.add_space(6.0);
-                ui.label(step_1);
+                ui.add(egui::Label::new(step_1).wrap());
                 ui.hyperlink_to(VB_CABLE_DOWNLOAD_URL, VB_CABLE_DOWNLOAD_URL);
                 ui.add_space(6.0);
-                ui.label(step_2);
-                ui.label(step_3);
+                ui.add(egui::Label::new(step_2).wrap());
+                ui.add(egui::Label::new(step_3).wrap());
                 ui.add_space(8.0);
-                ui.label(note);
+                ui.add(egui::Label::new(note).wrap());
                 ui.add_space(10.0);
                 if ui.button(close_text).clicked() {
                     self.close_vbcable_notice();
@@ -1650,18 +1655,21 @@ impl MugenTtsApp {
         egui::Window::new(title)
             .collapsible(false)
             .resizable(false)
+            .default_width(520.0)
+            .min_width(520.0)
+            .max_width(520.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.set_max_width(620.0);
-                ui.label(step_1);
+                ui.set_width(520.0);
+                ui.add(egui::Label::new(step_1).wrap());
                 ui.add_space(6.0);
-                ui.label(step_2);
+                ui.add(egui::Label::new(step_2).wrap());
                 ui.add_space(6.0);
-                ui.label(step_3);
+                ui.add(egui::Label::new(step_3).wrap());
                 ui.add_space(6.0);
-                ui.label(step_4);
+                ui.add(egui::Label::new(step_4).wrap());
                 ui.add_space(6.0);
-                ui.label(step_5);
+                ui.add(egui::Label::new(step_5).wrap());
                 ui.hyperlink_to(
                     "https://space.bilibili.com/5145514",
                     "https://space.bilibili.com/5145514",
