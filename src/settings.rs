@@ -30,6 +30,7 @@ impl Default for TtsMode {
 pub struct Settings {
     pub voice_name: String,
     pub output_device: String,
+    pub quick_start_completed: bool,
     pub play_on_default_speaker: bool,
     pub rate: i32,
     pub volume: i32,
@@ -58,6 +59,7 @@ pub struct Settings {
 struct RawSettings {
     voice_name: String,
     output_device: String,
+    quick_start_completed: Option<bool>,
     play_on_default_speaker: bool,
     rate: i32,
     volume: i32,
@@ -87,6 +89,7 @@ impl Default for Settings {
         Self {
             voice_name: String::new(),
             output_device: String::new(),
+            quick_start_completed: false,
             play_on_default_speaker: true,
             rate: 0,
             volume: 100,
@@ -118,6 +121,7 @@ impl Default for RawSettings {
         Self {
             voice_name: defaults.voice_name,
             output_device: defaults.output_device,
+            quick_start_completed: Some(defaults.quick_start_completed),
             play_on_default_speaker: defaults.play_on_default_speaker,
             rate: defaults.rate,
             volume: defaults.volume,
@@ -159,6 +163,7 @@ impl<'de> Deserialize<'de> for Settings {
         Ok(Self {
             voice_name: raw.voice_name,
             output_device: raw.output_device,
+            quick_start_completed: raw.quick_start_completed.unwrap_or(true),
             play_on_default_speaker: raw.play_on_default_speaker,
             rate: raw.rate,
             volume: raw.volume,

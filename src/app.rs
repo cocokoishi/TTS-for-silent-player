@@ -71,6 +71,8 @@ pub(crate) fn apply_window_opacity<T>(_target: &T, _opacity: u8) -> bool {
 
 const VRCHAT_OSC_RESET_AFTER_SECONDS_MIN: u16 = 1;
 const VRCHAT_OSC_RESET_AFTER_SECONDS_MAX: u16 = 120;
+const VB_CABLE_DOWNLOAD_URL: &str =
+    "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip";
 
 struct VrchatOscHistoryEntry {
     text: String,
@@ -104,9 +106,11 @@ pub struct MugenTtsApp {
     show_remote_error_notice: bool,
     last_online_error_message: String,
     edge_voices_requested: bool,
-    first_launch_missing_settings: bool,
-    vbcable_notice_checked: bool,
+    show_startup_guide_on_launch: bool,
+    startup_guide_checked: bool,
     show_vbcable_notice: bool,
+    show_quick_start_guide: bool,
+    show_quick_start_guide_after_vbcable_notice: bool,
     chinese_ui_locale: bool,
     last_applied_window_opacity: Option<u8>,
     pending_window_opacity_reapply_frames: u8,
@@ -114,7 +118,7 @@ pub struct MugenTtsApp {
 }
 
 impl MugenTtsApp {
-    pub fn new(focus_flag: Arc<AtomicBool>, first_launch_missing_settings: bool) -> Self {
+    pub fn new(focus_flag: Arc<AtomicBool>, show_startup_guide_on_launch: bool) -> Self {
         let settings = Settings::load();
         let tts = TtsBridge::spawn();
         let remote_tts = RemoteTts::spawn();
@@ -146,9 +150,11 @@ impl MugenTtsApp {
             show_remote_error_notice: false,
             last_online_error_message: String::new(),
             edge_voices_requested: false,
-            first_launch_missing_settings,
-            vbcable_notice_checked: false,
+            show_startup_guide_on_launch,
+            startup_guide_checked: false,
             show_vbcable_notice: false,
+            show_quick_start_guide: false,
+            show_quick_start_guide_after_vbcable_notice: false,
             chinese_ui_locale: Self::is_chinese_ui_locale(),
             last_applied_window_opacity: None,
             pending_window_opacity_reapply_frames: 45,
@@ -266,6 +272,47 @@ impl MugenTtsApp {
     #[cfg(not(windows))]
     fn is_chinese_ui_locale() -> bool {
         false
+    }
+
+    fn tutorial_button_label(&self) -> &'static str {
+        if self.chinese_ui_locale {
+            "快速使用教程"
+        } else {
+            "Tutorial"
+        }
+    }
+
+    fn maybe_start_startup_guide(&mut self) {
+        if !self.show_startup_guide_on_launch || self.startup_guide_checked {
+            return;
+        }
+
+        self.startup_guide_checked = true;
+
+        if Self::has_vbcable_device(&self.devices) {
+            self.show_quick_start_guide = true;
+        } else {
+            self.show_vbcable_notice = true;
+            self.show_quick_start_guide_after_vbcable_notice = true;
+        }
+    }
+
+    fn close_vbcable_notice(&mut self) {
+        self.show_vbcable_notice = false;
+
+        if self.show_quick_start_guide_after_vbcable_notice {
+            self.show_quick_start_guide_after_vbcable_notice = false;
+            self.show_quick_start_guide = true;
+        }
+    }
+
+    fn close_quick_start_guide(&mut self) {
+        self.show_quick_start_guide = false;
+
+        if !self.settings.quick_start_completed {
+            self.settings.quick_start_completed = true;
+            self.settings.save();
+        }
     }
 
     fn get_safe_boundaries(text: &str, read_end: usize, reading_end: usize) -> (usize, usize) {
@@ -582,12 +629,7 @@ impl eframe::App for MugenTtsApp {
                         }
                     }
 
-                    if self.first_launch_missing_settings && !self.vbcable_notice_checked {
-                        self.vbcable_notice_checked = true;
-                        if !Self::has_vbcable_device(&self.devices) {
-                            self.show_vbcable_notice = true;
-                        }
-                    }
+                    self.maybe_start_startup_guide();
 
                     self.selected_device_idx = self
                         .devices
@@ -952,6 +994,7 @@ impl eframe::App for MugenTtsApp {
         // Settings window (modal overlay)
         self.render_settings_window(ctx);
         self.render_vbcable_notice_window(ctx);
+        self.render_quick_start_guide_window(ctx);
     }
 }
 
@@ -972,7 +1015,14 @@ impl MugenTtsApp {
             .inner_margin(egui::Margin::same(12.0));
 
         settings_frame.show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button(egui::RichText::new(self.tutorial_button_label()).size(11.0))
+                    .clicked()
+                {
+                    self.show_quick_start_guide = true;
+                }
+
                 ui.label(
                     egui::RichText::new("Settings")
                         .color(egui::Color32::from_rgb(40, 40, 50))
@@ -1528,11 +1578,11 @@ impl MugenTtsApp {
         let (title, lead, step_1, step_2, step_3, note, close_text) = if self.chinese_ui_locale {
             (
                 "未检测到 VB-CABLE",
-                "首次启动时没有检测到 VB-CABLE 音频设备。若要把语音路由到 VRChat，请先安装驱动：",
+                "首次启动时没有检测到 VB-CABLE 音频设备。如果你想把语音送进 VRChat，请先安装驱动：",
                 "1. 下载驱动压缩包：",
-                "2. 解压下载的 zip 文件。",
-                "3. 双击 VBCABLE_Setup_x64.exe 安装（建议以管理员身份运行）。",
-                "安装完成后，重启本程序，输出设备里会出现 CABLE 设备。",
+                "2. 解压下载好的 zip 压缩包。",
+                "3. 运行 VBCABLE_Setup_x64.exe，建议使用管理员权限安装。",
+                "安装完成后，重新启动本程序，输出设备列表中就会出现 CABLE 设备。",
                 "我知道了",
             )
         } else {
@@ -1556,10 +1606,7 @@ impl MugenTtsApp {
                 ui.label(lead);
                 ui.add_space(6.0);
                 ui.label(step_1);
-                ui.hyperlink_to(
-                    "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip",
-                    "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip",
-                );
+                ui.hyperlink_to(VB_CABLE_DOWNLOAD_URL, VB_CABLE_DOWNLOAD_URL);
                 ui.add_space(6.0);
                 ui.label(step_2);
                 ui.label(step_3);
@@ -1567,8 +1614,63 @@ impl MugenTtsApp {
                 ui.label(note);
                 ui.add_space(10.0);
                 if ui.button(close_text).clicked() {
-                    self.show_vbcable_notice = false;
+                    self.close_vbcable_notice();
+                }
+            });
+    }
+
+    fn render_quick_start_guide_window(&mut self, ctx: &egui::Context) {
+        if !self.show_quick_start_guide {
+            return;
+        }
+
+        let (title, step_1, step_2, step_3, step_4, step_5, close_text) =
+            if self.chinese_ui_locale {
+                (
+                    "快速使用指南",
+                    "1.在使用前，请确保你的电脑已经安装VB-CABLE等软件。如果没有安装，会在第一次打开就提醒。安装完毕后重启程序会自动使用VB-CABLE的声音通道。",
+                    "2.在游戏中，将输入麦克风设备改成CABLE Output，即可开始使用本软件",
+                    "3.本软件内置3种语音模式，第一种是win自带的，离线可用。第二种是默认的Edge-TTS，需要联网。第三种是第三方语音大模型。",
+                    "4.当您在游戏中游玩的时候，可以按下右Shift键快速切回本软件。设置里面也可以打开OSC来支持VRChat游戏",
+                    "5.更多支持可以联系",
+                    "关闭",
+                )
+            } else {
+                (
+                    "Quick Start Guide",
+                    "1. Before using this app, please make sure VB-CABLE or a similar tool is installed on your PC. If it is not installed, the app will remind you the first time you open it. After installation, restart the app and it will automatically use the VB-CABLE audio channel.",
+                    "2. In the game, change the microphone/input device to CABLE Output, and you can start using this software.",
+                    "3. This software includes 3 voice modes. The first is the built-in Windows voice, which works offline. The second is the default Edge-TTS, which requires an internet connection. The third is a third-party large voice model.",
+                    "4. While playing, you can press the Right Shift key to quickly switch back to this software. You can also enable OSC in Settings to support VRChat.",
+                    "5. For more support, please visit",
+                    "Close",
+                )
+            };
+
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_max_width(620.0);
+                ui.label(step_1);
+                ui.add_space(6.0);
+                ui.label(step_2);
+                ui.add_space(6.0);
+                ui.label(step_3);
+                ui.add_space(6.0);
+                ui.label(step_4);
+                ui.add_space(6.0);
+                ui.label(step_5);
+                ui.hyperlink_to(
+                    "https://space.bilibili.com/5145514",
+                    "https://space.bilibili.com/5145514",
+                );
+                ui.add_space(10.0);
+                if ui.button(close_text).clicked() {
+                    self.close_quick_start_guide();
                 }
             });
     }
 }
+

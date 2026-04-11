@@ -19,8 +19,8 @@ use std::time::Duration;
 fn main() -> eframe::Result<()> {
     let focus_flag = Arc::new(AtomicBool::new(false));
 
-    let first_launch_missing_settings = !Settings::config_exists();
     let settings = Settings::load();
+    let show_startup_guide_on_launch = !settings.quick_start_completed;
     settings.save();
     let initial_window_opacity = settings.window_opacity;
 
@@ -99,7 +99,7 @@ fn main() -> eframe::Result<()> {
 
             Ok(Box::new(MugenTtsApp::new(
                 focus_flag,
-                first_launch_missing_settings,
+                show_startup_guide_on_launch,
             )))
         }),
     )
